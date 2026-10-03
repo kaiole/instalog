@@ -23,4 +23,4 @@ Remove or leave out of scope
 
 - Ads, subscriptions, and feature paywalls. Dashboard clutter and secondary
 - features unrelated to routine logging. Cloud synchronization and external
-- integrations for the school prototype.
+- integrations for now.

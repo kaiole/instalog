@@ -1,7 +1,7 @@
 import Foundation
 @testable import InstalogCore
 
-/// Deterministic synthetic foods from the specification's numeric fixture.
+/// Deterministic synthetic foods from a fixed numeric fixture.
 enum Fixtures {
     static let foodA = FoodDefinition(
         id: UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!, source: .custom, name: "Food A",

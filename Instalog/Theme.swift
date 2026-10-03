@@ -2,7 +2,7 @@ import CoreText
 import InstalogCore
 import SwiftUI
 
-/// Design tokens from the supplied design (dark, Geist / Geist Mono, lime accent).
+/// Design tokens from the design canvas (dark, Geist / Geist Mono, lime accent).
 enum Palette {
     static let background = Color(hex: 0x0B0D0F)
     static let surface = Color(hex: 0x14171A)

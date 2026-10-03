@@ -5,7 +5,7 @@ eat every day. The main screen shows one section (Breakfast, Lunch, …) and one
 Adjust today's amounts if you need to, then log it with one tap. The entries you've logged sit in the
 same section card.
 
-School MVP. Free, local-only, no account, no ads, no cloud sync.
+Free, local-only, no account, no ads, no cloud sync.
 
 ## Requirements
 
@@ -44,7 +44,7 @@ xcodebuild -project Instalog.xcodeproj -scheme Instalog \
 Set `SCREENSHOT_DIR=/some/dir` when running the UI tests to save screenshots of each step.
 Debug builds also accept the `--reset-data` launch argument to start with an empty store.
 
-Tests are named after the specification's acceptance IDs (AT-01 … AT-37) and defaults (D-01 … D-16).
+Tests are named after acceptance IDs (AT-01 … AT-37) and defaults (D-01 … D-16).
 
 ## Layout
 
@@ -130,11 +130,11 @@ python3 tools/build_catalog.py FoodData_Central_sr_legacy_food_csv_2018-04
 - The library uses creation order. You can't reorder the whole library globally, only each section.
 - Local only. Uninstalling the app deletes your data unless you exported it or your device backup
   includes it.
-- Dark appearance only, matching the supplied design.
+- Dark appearance only, matching the design canvas.
 
 ## Design notes and deviations
 
-The UI follows the supplied design canvas: colors, Geist type, the section card with logged entries
+The UI follows the design canvas: colors, Geist type, the section card with logged entries
 above the meal chooser, swipe-to-reveal Delete, undo toasts, the sections sheet, Add food, settings
 and setup. Where it adds to or differs from the design:
 
@@ -142,7 +142,7 @@ and setup. Where it adds to or differs from the design:
   how it compares with your target, so micronutrients are visible. In the design, tapping the summary
   opened Settings; summary metrics are still chosen in Settings.
 - Add food can build a **multi-food one-off entry** ("Add another food") and offers an explicit
-  "Also save as a meal" toggle. This covers spec ADD-04.
+  "Also save as a meal" toggle. This covers ADD-04.
 - The entry sheet saves edits on **Done** and asks before discarding unsaved changes. It also has
   **Move to another section** (D-09) and **Save as a meal** for one-offs.
 - Setup lists sections with drag handles behind a **Reorder** button. Tapping a section opens its
