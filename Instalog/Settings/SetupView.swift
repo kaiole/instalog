@@ -33,7 +33,7 @@ struct SetupView: View {
                         }
                         .frame(minHeight: 44)
                     }
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
                     .accessibilityAction(named: "Move up") { move(index, by: -1) }
                     .accessibilityAction(named: "Move down") { move(index, by: 1) }
                     .swipeActions {
@@ -50,7 +50,7 @@ struct SetupView: View {
                     Label("New section", systemImage: "plus").font(Typeface.sans(15, .semibold))
                 }
                 .foregroundStyle(Palette.accent)
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 Caption("Sections")
             } footer: {
@@ -69,7 +69,7 @@ struct SetupView: View {
                     }
                     .frame(minHeight: 44)
                 }
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 Caption("Library")
             }
@@ -92,6 +92,7 @@ struct SetupView: View {
         .alert("New section", isPresented: $addingSection) {
             TextField("Name, e.g. Post-workout", text: $newSectionName)
             Button("Add") { Task { await run { try await model.addSection(named: newSectionName) } } }
+                .disabled(newSectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -140,7 +141,7 @@ struct SectionMealsView: View {
                     .font(Typeface.sans(17, .semibold))
                     .submitLabel(.done)
                     .onSubmit(rename)
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
             } header: {
                 Caption("Name")
             }
@@ -149,7 +150,7 @@ struct SectionMealsView: View {
                     Text("No meals assigned, so \(section?.name ?? "this section") shows all your saved meals.")
                         .font(Typeface.sans(13))
                         .foregroundStyle(Palette.secondary)
-                        .listRowBackground(Palette.row)
+                        .listRowBackground(Palette.raised)
                 }
                 ForEach(Array(meals.enumerated()), id: \.element.id) { index, meal in
                     HStack {
@@ -165,7 +166,7 @@ struct SectionMealsView: View {
                         }
                     }
                     .frame(minHeight: 44)
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
                     .accessibilityAction(named: "Move up") { reorder(meals, from: index, by: -1) }
                     .accessibilityAction(named: "Move down") { reorder(meals, from: index, by: 1) }
                 }
@@ -181,7 +182,7 @@ struct SectionMealsView: View {
                     Label("Add a meal to \(section?.name ?? "section")", systemImage: "plus").font(Typeface.sans(14, .semibold))
                 }
                 .foregroundStyle(Palette.accent)
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 Caption("Meals, in order")
             } footer: {
@@ -204,12 +205,17 @@ struct SectionMealsView: View {
     }
 
     private func rename() {
-        guard let section, name.trimmingCharacters(in: .whitespaces) != section.name,
-            !name.trimmingCharacters(in: .whitespaces).isEmpty
-        else { return }
+        guard let section else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        // A blank name isn't saved; put the current one back so the field never shows empty.
+        guard !trimmed.isEmpty else {
+            name = section.name
+            return
+        }
+        guard trimmed != section.name else { return }
         Task {
-            do { try await model.renameSection(id: sectionID, to: name) } catch {
-                model.errorMessage = "Couldn’t rename the section."
+            do { try await model.renameSection(id: sectionID, to: trimmed) } catch {
+                model.errorMessage = "Couldn’t rename the section. \(error.localizedDescription)"
             }
         }
     }
@@ -223,7 +229,7 @@ struct SectionMealsView: View {
     private func save(_ ids: [UUID]) {
         Task {
             do { try await model.setMeals(ids, forSection: sectionID) } catch {
-                model.errorMessage = "Couldn’t save the meal order."
+                model.errorMessage = "Couldn’t save the meal order. \(error.localizedDescription)"
             }
         }
     }
@@ -253,8 +259,12 @@ struct MealPickerSheet: View {
                 ForEach(available) { meal in
                     Button {
                         Task {
-                            try? await model.setMeals((section?.mealIDs ?? []) + [meal.id], forSection: sectionID)
-                            close()
+                            do {
+                                try await model.setMeals((section?.mealIDs ?? []) + [meal.id], forSection: sectionID)
+                                close()
+                            } catch {
+                                model.errorMessage = "Couldn’t add “\(meal.name)”. \(error.localizedDescription)"
+                            }
                         }
                     } label: {
                         HStack {
@@ -270,7 +280,7 @@ struct MealPickerSheet: View {
                         }
                         .padding(.horizontal, 14)
                         .frame(minHeight: 56)
-                        .background(Palette.row, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

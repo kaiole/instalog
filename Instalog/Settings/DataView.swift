@@ -20,7 +20,7 @@ struct DataView: View {
                 } label: {
                     Label("Export all data", systemImage: "square.and.arrow.up")
                 }
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 Caption("Export")
             } footer: {
@@ -32,7 +32,7 @@ struct DataView: View {
                 } label: {
                     Label("Import and replace…", systemImage: "square.and.arrow.down")
                 }
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 Caption("Import")
             } footer: {
@@ -45,7 +45,7 @@ struct DataView: View {
                         ShareLink(item: recoveryURL) { Label("Share recovery export", systemImage: "doc") }
                     }
                 }
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             }
             SwiftUI.Section {
                 Text("Instalog keeps data only on this device. There’s no account and no app cloud sync; uninstalling deletes it unless you’ve exported it or your device backup includes it.")

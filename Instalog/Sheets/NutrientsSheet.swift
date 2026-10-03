@@ -40,7 +40,7 @@ struct NutrientsSheet: View {
                                     }
                                 }
                                 .padding(.horizontal, 14)
-                                .cardBackground(Palette.row, radius: 18)
+                                .cardBackground(Palette.raised, radius: 18)
                             }
                         }
                     }
@@ -103,9 +103,7 @@ private struct NutrientRow: View {
     }
 
     private var amountText: String {
-        let amount = Format.amount(comparison.total, unit: definition.unit)
-        guard comparison.total.displayAmount != nil else { return "no data" }
-        return "\(amount) \(definition.unit.rawValue)"
+        Format.amountWithUnit(comparison.total, unit: definition.unit)
     }
 
     private var detailText: String? {
@@ -118,7 +116,7 @@ private struct NutrientRow: View {
             }
             var text = "\(kind) \(NumberFormatting.nutrient(target.amount, unit: target.unit))"
             if case .referenceTable(let name, _) = target.source { text += " · \(name)" }
-            if let fraction = comparison.fraction { text += " · \(Int((fraction * 100).rounded()))%" }
+            if let percent = comparison.fraction.flatMap(NumberFormatting.percent) { text += " · \(percent)" }
             if !comparison.isComparable { text += " · not comparable with this data (\(target.form ?? "form") vs \(definition.form ?? "reported form"))" }
             parts.append(text)
         }

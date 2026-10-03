@@ -48,6 +48,20 @@ public struct LoggedFoodSnapshot: Hashable, Sendable, Codable, Identifiable {
     }
 
     public var unitLabel: String { nutrition.label(for: unit, quantity: quantity) }
+
+    /// Identity of the catalog record this food was copied from, matching `FoodDefinition.catalogKey`.
+    public var catalogKey: String? {
+        guard source == .usda, let sourceFoodID else { return nil }
+        return "usda:\(sourceDataType ?? ""):\(sourceVersion ?? ""):\(sourceFoodID)"
+    }
+
+    /// A food definition carrying this snapshot's data, reusing the original food ID when known.
+    public var asFoodDefinition: FoodDefinition {
+        FoodDefinition(
+            id: foodID ?? id, source: source, sourceFoodID: sourceFoodID, name: name, brand: brand,
+            preparation: preparation, sourceDataType: sourceDataType, sourceVersion: sourceVersion,
+            nutrition: nutrition)
+    }
 }
 
 /// A historical record of something the user logged on a particular day.

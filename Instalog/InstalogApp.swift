@@ -13,10 +13,16 @@ struct InstalogApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let model {
+                if let model, let loadError = model.loadError, !model.isLoaded {
+                    // Never show an empty app over data that failed to load.
+                    StartupErrorView(message: loadError) { await model.load() }
+                } else if let model {
                     RootView(model: model)
                 } else if let startupError {
-                    StartupErrorView(message: startupError)
+                    StartupErrorView(message: startupError) {
+                        self.startupError = nil
+                        await start()
+                    }
                 } else {
                     Palette.background.ignoresSafeArea()
                 }
@@ -44,28 +50,67 @@ struct InstalogApp: App {
             await diary.load()
             model = diary
         } catch {
-            startupError = "Couldn’t open local storage. \(error)"
+            startupError = "Couldn’t open your data. \(error.localizedDescription)"
         }
     }
 }
 
 struct StartupErrorView: View {
     let message: String
+    let retry: () async -> Void
+    @State private var isRetrying = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "externaldrive.badge.exclamationmark").font(.system(size: 40))
-            Text(message).multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: Spacing.l) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.title2)
+                .foregroundStyle(Palette.dangerText)
+                .frame(width: 56, height: 56)
+                .background(Palette.dangerSurface, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+                .accessibilityHidden(true)
+            Text("Couldn’t open your food log")
+                .font(Typeface.title2)
+                .accessibilityAddTraits(.isHeader)
+            Text("Your entries are still on this iPhone. Something stopped Instalog from reading them just now. Trying again usually fixes it.")
+                .font(Typeface.body)
+                .foregroundStyle(Palette.secondary)
+            Button {
+                isRetrying = true
+                Task {
+                    await retry()
+                    isRetrying = false
+                }
+            } label: {
+                if isRetrying { ProgressView().tint(Palette.onAccent) } else { Text("Try again") }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isRetrying)
+            .padding(.top, Spacing.s)
+            DisclosureGroup("Technical details") {
+                Text(message)
+                    .font(Typeface.numFootnote)
+                    .foregroundStyle(Palette.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, Spacing.s)
+            }
+            .font(Typeface.body)
+            .tint(Palette.secondary)
+            .padding(Spacing.l)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+            Text("Nothing was deleted. If this keeps happening, restart your iPhone, then try again.")
+                .font(Typeface.footnote)
+                .foregroundStyle(Palette.secondary)
         }
-        .foregroundStyle(Palette.secondary)
-        .padding(32)
+        .foregroundStyle(Palette.text)
+        .padding(.horizontal, Spacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.background)
     }
 }
 
 /// Every sheet the main screen can present.
-enum ActiveSheet: Identifiable, Hashable {
+enum ActiveSheet: Identifiable {
     case sections
     case entry(UUID)
     case addFood(destinationID: String, date: LogDate)
@@ -90,7 +135,7 @@ enum ActiveSheet: Identifiable, Hashable {
 }
 
 struct RootView: View {
-    @Bindable var model: DiaryModel
+    let model: DiaryModel
     @State private var sheet: ActiveSheet?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -132,6 +177,10 @@ struct RootView: View {
             if let entry = model.entries.first(where: { $0.id == id }) {
                 EntrySheet(model: model, original: entry, close: close)
                     .presentationDetents([.large])
+            } else {
+                EmptyStateView(
+                    systemImage: "tray", title: "Entry not found",
+                    message: "It may have been deleted or moved to another day.", action: ("Close", close))
             }
         case .addFood(let destinationID, let date):
             AddFoodSheet(
@@ -146,7 +195,7 @@ struct RootView: View {
             NutrientsSheet(model: model, close: close, openSettings: { self.sheet = .settings })
         case .day:
             DayPickerSheet(model: model, close: close)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.height(560), .large])
         case .newMeal:
             NavigationStack { MealEditorView(model: model, meal: nil, onDone: close) }
         }

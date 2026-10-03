@@ -18,7 +18,7 @@ struct MealLibraryView: View {
                         }
                         .frame(minHeight: 44)
                     }
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
                     .swipeActions {
                         Button("Remove", role: .destructive) { removing = meal }
                     }
@@ -28,7 +28,7 @@ struct MealLibraryView: View {
                 } label: {
                     Label("New saved meal", systemImage: "plus").font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.accent)
                 }
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } footer: {
                 Text("Library order is creation order. Each section can show its own order.")
             }
@@ -44,7 +44,11 @@ struct MealLibraryView: View {
             Button("Remove meal", role: .destructive) {
                 if let id = removing?.id {
                     Task {
-                        do { try await model.archiveMeal(id: id) } catch { model.errorMessage = "Couldn’t remove the meal." }
+                        do {
+                            try await model.archiveMeal(id: id)
+                        } catch {
+                            model.errorMessage = "Couldn’t remove the meal. \(error.localizedDescription)"
+                        }
                     }
                 }
             }
@@ -58,7 +62,8 @@ struct MealLibraryView: View {
         let items = DraftItem.items(for: meal, foods: model.foods)
         let energy = (try? NutritionCalculator.summarize(items.map(\.calculatorItem)))?[.energy].known ?? 0
         let sections = model.sections(containing: meal.id).map(\.name)
-        return (["\(meal.items.count) foods", "\(NumberFormatting.energy(energy)) kcal"] + sections).joined(separator: " · ")
+        let count = meal.items.count == 1 ? "1 food" : "\(meal.items.count) foods"
+        return ([count, "\(NumberFormatting.energy(energy)) kcal"] + sections).joined(separator: " · ")
     }
 }
 
@@ -74,14 +79,37 @@ struct MealEditorView: View {
     @State private var newFoods: [UUID: FoodDefinition] = [:]
     @State private var error: String?
     @State private var loaded = false
+    @State private var isSaving = false
+    @State private var confirmingDiscard = false
+    /// A new meal keeps one id, so a stray second save updates instead of duplicating.
+    @State private var newID = UUID()
     @Environment(\.dismiss) private var dismiss
+
+    private var savedItems: [DraftItem] {
+        guard let meal else { return [] }
+        return DraftItem.items(for: meal, foods: model.foods).map {
+            var item = $0
+            item.templateQuantity = nil
+            return item
+        }
+    }
+
+    private var hasChanges: Bool {
+        loaded && (name != (meal?.name ?? "") || items != savedItems)
+    }
 
     var body: some View {
         let nutrition = (try? NutritionCalculator.summarize(items.map(\.calculatorItem))) ?? NutritionSummary()
         List {
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(Typeface.sans(14))
+                    .foregroundStyle(Palette.dangerText)
+                    .listRowBackground(Palette.dangerSurface)
+            }
             SwiftUI.Section {
                 TextField("Meal name, e.g. Oats + yogurt", text: $name).font(Typeface.sans(17, .semibold))
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
             } header: {
                 Caption("Name")
             }
@@ -90,10 +118,11 @@ struct MealEditorView: View {
                     DraftItemRow(
                         item: item, defaultWord: "default", setQuantity: { item.quantity = $0 },
                         units: item.food.nutrition.supportedUnits, setUnit: { unit in
+                            item.quantity = item.food.nutrition.convert(quantity: item.quantity, from: item.unit, to: unit)
+                                ?? (unit == .gram || unit == .milliliter ? 100 : 1)
                             item.unit = unit
-                            item.quantity = unit == .gram || unit == .milliliter ? 100 : 1
                         })
-                    .listRowBackground(Palette.row)
+                    .listRowBackground(Palette.raised)
                 }
                 .onMove { items = items.moving(fromOffsets: $0, toOffset: $1) }
                 .onDelete { items.remove(atOffsets: $0) }
@@ -103,7 +132,7 @@ struct MealEditorView: View {
                     Label("Add food", systemImage: "plus").font(Typeface.sans(14, .semibold))
                 }
                 .foregroundStyle(Palette.accent)
-                .listRowBackground(Palette.row)
+                .listRowBackground(Palette.raised)
             } header: {
                 HStack {
                     Caption("Foods")
@@ -115,65 +144,65 @@ struct MealEditorView: View {
                     ? "Default amounts can be adjusted each time you log, without changing the saved meal."
                     : "Changes apply to future logs only. Entries you already logged stay as they were.")
             }
-            if let error {
-                Text(error).foregroundStyle(Palette.dangerText).listRowBackground(Color.clear)
-            }
         }
         .scrollContentBackground(.hidden)
         .background(Palette.sheet)
         .environment(\.editMode, .constant(.active))
         .navigationTitle(meal == nil ? "New saved meal" : "Edit meal")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(hasChanges)
+        .interactiveDismissDisabled(hasChanges)
         .toolbar {
-            if let onDone {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onDone) }
+            if onDone != nil || hasChanges {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: requestCancel) }
             }
-            ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.semibold) }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save", action: save).fontWeight(.semibold).disabled(isSaving)
+            }
+        }
+        .confirmationDialog("Discard changes to this meal?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
+            Button("Discard changes", role: .destructive, action: finish)
+            Button("Keep editing", role: .cancel) {}
         }
         .sheet(isPresented: $pickingFood) {
-            NavigationStack {
-                FoodPickerFlow(model: model) { food, quantity, unit in
-                    if model.foods[food.id] == nil { newFoods[food.id] = food }
-                    items.append(DraftItem(food: food, quantity: quantity, unit: unit))
-                    pickingFood = false
-                }
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { pickingFood = false } }
-                }
+            FoodPickerFlow(model: model, cancel: { pickingFood = false }) { food, quantity, unit in
+                if model.foods[food.id] == nil { newFoods[food.id] = food }
+                items.append(DraftItem(food: food, quantity: quantity, unit: unit))
+                pickingFood = false
             }
             .presentationBackground(Palette.sheet)
         }
         .onAppear {
-            guard !loaded, let meal else { return }
+            guard !loaded else { return }
             loaded = true
-            name = meal.name
-            items = DraftItem.items(for: meal, foods: model.foods).map {
-                var item = $0
-                item.templateQuantity = nil
-                return item
-            }
+            name = meal?.name ?? ""
+            items = savedItems
         }
         .foregroundStyle(Palette.text)
     }
 
+    private func requestCancel() {
+        if hasChanges { confirmingDiscard = true } else { finish() }
+    }
+
+    private func finish() {
+        if let onDone { onDone() } else { dismiss() }
+    }
+
     private func save() {
-        var updated = meal ?? MealTemplate(name: "", items: [], sortOrder: 0)
+        guard !isSaving else { return }
+        var updated = meal ?? MealTemplate(id: newID, name: "", items: [], sortOrder: 0)
         updated.name = name
         updated.items = items.map { MealTemplateItem(id: $0.id, foodID: $0.food.id, defaultQuantity: $0.quantity, unit: $0.unit) }
+        isSaving = true
+        error = nil
         Task {
             do {
                 try await model.saveMeal(updated, foods: Array(newFoods.values))
-                if let onDone { onDone() } else { dismiss() }
-            } catch let validation as MealValidationError {
-                error = switch validation {
-                case .blankName: "Give the meal a name."
-                case .noFoods: "Add at least one food."
-                case .invalidQuantity: "Every food needs an amount above zero."
-                case .missingFood: "A food in this meal is no longer available."
-                case .unsupportedUnit: "One of the units can’t be converted for that food."
-                }
+                finish()
             } catch {
-                self.error = "Couldn’t save the meal. \(error.localizedDescription)"
+                self.error = error.localizedDescription
+                isSaving = false
             }
         }
     }
@@ -182,20 +211,32 @@ struct MealEditorView: View {
 /// Search, review, then return a food with an amount.
 struct FoodPickerFlow: View {
     let model: DiaryModel
+    let cancel: () -> Void
     let onPick: (FoodDefinition, Double, MeasureUnit) -> Void
-    @State private var path: [FoodDefinition] = []
+    @State private var path: [FoodPick] = []
+    @State private var query = ""
 
     var body: some View {
-        FoodSearchView(model: model) { food in path.append(food) }
+        NavigationStack(path: $path) {
+            FoodSearchView(
+                model: model, query: $query, autoFocus: true,
+                onQuickAdd: { recent in onPick(recent.food, recent.quantity, recent.unit) }
+            ) { food, recent in
+                path.append(FoodPick(food: food, recent: recent))
+            }
             .padding(16)
             .background(Palette.sheet)
             .navigationTitle("Add food")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(for: FoodDefinition.self) { food in
-                FoodDetailView(food: food, actionTitle: "Add to meal") { quantity, unit in
-                    onPick(food, quantity, unit)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel) }
+            }
+            .navigationDestination(for: FoodPick.self) { pick in
+                FoodDetailView(food: pick.food, initial: pick.initial, actionTitle: "Add to meal", close: cancel) { quantity, unit in
+                    onPick(pick.food, quantity, unit)
                 }
             }
-            .errorAlert(model)
+        }
+        .errorAlert(model)
     }
 }

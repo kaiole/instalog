@@ -1,10 +1,11 @@
 import InstalogCore
 import SwiftUI
 
-/// Entries logged in the current section, collapsed to one line until expanded.
+/// Entries logged in the current section. Shown expanded; the header collapses them.
 struct LoggedEntriesGroup: View {
     let model: DiaryModel
     let entries: [LoggedEntry]
+    let sectionName: String
     let emptyText: String
     @Binding var isExpanded: Bool
     @Binding var revealedEntryID: UUID?
@@ -13,20 +14,20 @@ struct LoggedEntriesGroup: View {
     var body: some View {
         if entries.isEmpty {
             Text(emptyText)
-                .font(Typeface.sans(13, relativeTo: .footnote))
+                .font(Typeface.subhead)
                 .foregroundStyle(Palette.tertiary)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, Spacing.l)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.l, style: .continuous)
                         .strokeBorder(Palette.outline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
         } else {
             VStack(spacing: 0) {
                 summaryButton
                 if isExpanded {
-                    Divider().overlay(Palette.divider)
                     ForEach(entries) { entry in
+                        Rectangle().fill(Palette.divider).frame(height: 1).padding(.leading, Spacing.l)
                         LoggedEntryRow(
                             model: model, entry: entry, isRevealed: revealedEntryID == entry.id,
                             reveal: { revealedEntryID = $0 ? entry.id : nil },
@@ -40,8 +41,8 @@ struct LoggedEntriesGroup: View {
                     }
                 }
             }
-            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
         }
     }
 
@@ -53,33 +54,27 @@ struct LoggedEntriesGroup: View {
                 revealedEntryID = nil
             }
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.s) {
+                Caption("Logged in \(sectionName)")
+                    .lineLimit(1)
                 Text("\(entries.count)")
-                    .font(Typeface.mono(13, .semibold))
+                    .font(Typeface.mono(12, .semibold, relativeTo: .caption))
                     .foregroundStyle(Palette.accent)
-                    .frame(width: 28, height: 28)
-                    .background(Color(hex: 0x262C31), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 0) {
-                        Text("Logged here · ")
-                        Text(NumberFormatting.energy(energy.known)).font(Typeface.mono(14, .semibold))
-                        Text(" kcal")
-                    }
-                    .font(Typeface.sans(14, .semibold, relativeTo: .subheadline))
-                    Text(entries.map(\.name).joined(separator: ", "))
-                        .font(Typeface.sans(13, relativeTo: .footnote))
-                        .foregroundStyle(Palette.tertiary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 22, minHeight: 22)
+                    .background(Palette.badge, in: RoundedRectangle(cornerRadius: Radius.s, style: .continuous))
+                Spacer(minLength: Spacing.s)
+                Text("\(NumberFormatting.energy(energy.known)) kcal")
+                    .font(Typeface.mono(13, relativeTo: .subheadline))
                     .foregroundStyle(Palette.secondary)
-                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                Image(systemName: "chevron.up")
+                    .font(.system(.footnote, weight: .semibold))
+                    .foregroundStyle(Palette.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 0 : 180))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(minHeight: 56)
+            .padding(.leading, Spacing.l)
+            .padding(.trailing, Spacing.m)
+            .frame(minHeight: 48)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -89,7 +84,7 @@ struct LoggedEntriesGroup: View {
     }
 }
 
-/// One logged entry. Swiping right only reveals Delete; deleting takes a tap.
+/// One logged entry. Swiping left reveals Delete; a long swipe deletes. Undo is in the toast.
 struct LoggedEntryRow: View {
     let model: DiaryModel
     let entry: LoggedEntry
@@ -99,22 +94,21 @@ struct LoggedEntryRow: View {
 
     @GestureState private var dragOffset: CGFloat = 0
     private let actionWidth: CGFloat = 88
+    private let fullSwipe: CGFloat = 200
 
     var body: some View {
         let energy = NutritionCalculator.summarize(entry)[.energy]
-        let offset = max(0, min(actionWidth + 28, (isRevealed ? actionWidth : 0) + dragOffset))
+        let offset = min(0, max(-fullSwipe - 20, (isRevealed ? -actionWidth : 0) + dragOffset))
 
-        ZStack(alignment: .leading) {
-            if offset > 0 {
-                Button(role: .destructive) {
-                    Task { await model.deleteEntry(entry) }
-                } label: {
+        ZStack(alignment: .trailing) {
+            if offset < 0 {
+                Button(role: .destructive, action: delete) {
                     VStack(spacing: 3) {
                         Image(systemName: "trash")
-                        Text("Delete").font(Typeface.sans(12, .semibold))
+                        Text("Delete").font(Typeface.sans(12, .semibold, relativeTo: .caption))
                     }
-                    .foregroundStyle(.white)
-                    .frame(width: actionWidth)
+                    .foregroundStyle(Palette.onDanger)
+                    .frame(width: max(actionWidth, -offset))
                     .frame(maxHeight: .infinity)
                     .background(Palette.danger)
                 }
@@ -122,25 +116,25 @@ struct LoggedEntryRow: View {
                 .accessibilityHidden(true)
             }
             Button(action: open) {
-                HStack(spacing: 12) {
+                HStack(spacing: Spacing.m) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(entry.name).font(Typeface.sans(15, .medium, relativeTo: .body))
+                        Text(entry.name).font(Typeface.bodyMedium)
                         Text(subtitle)
-                            .font(Typeface.sans(12, relativeTo: .caption))
+                            .font(Typeface.footnote)
                             .foregroundStyle(Palette.tertiary)
                     }
                     Spacer(minLength: 0)
                     Text(NumberFormatting.energy(energy.known))
-                        .font(Typeface.mono(14))
+                        .font(Typeface.numCallout)
                         .foregroundStyle(Palette.secondary)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(.footnote, weight: .semibold))
                         .foregroundStyle(Palette.tertiary)
                 }
-                .padding(.leading, 54)
-                .padding(.trailing, 14)
-                .padding(.vertical, 8)
-                .frame(minHeight: 54)
+                .padding(.leading, Spacing.l)
+                .padding(.trailing, Spacing.m)
+                .padding(.vertical, 6)
+                .frame(minHeight: Metrics.formRow)
                 .background(Palette.raised)
                 .contentShape(Rectangle())
             }
@@ -149,7 +143,6 @@ struct LoggedEntryRow: View {
             .animation(.easeOut(duration: 0.2), value: isRevealed)
         }
         .clipped()
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.border).frame(height: 1) }
         .simultaneousGesture(
             DragGesture(minimumDistance: 12)
                 .updating($dragOffset) { value, state, _ in
@@ -159,14 +152,23 @@ struct LoggedEntryRow: View {
                 }
                 .onEnded { value in
                     guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                    let final = (isRevealed ? actionWidth : 0) + value.translation.width
-                    reveal(final > actionWidth / 2)
+                    let final = (isRevealed ? -actionWidth : 0) + value.translation.width
+                    if final < -fullSwipe {
+                        delete()
+                    } else {
+                        reveal(final < -actionWidth / 2)
+                    }
                 }
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(entry.name), logged \(Format.time(entry.recordedAt)), \(NumberFormatting.energy(energy.known)) calories")
         .accessibilityHint("Opens the entry")
-        .accessibilityAction(named: "Delete") { Task { await model.deleteEntry(entry) } }
+        .accessibilityAction(named: "Delete", delete)
+    }
+
+    private func delete() {
+        reveal(false)
+        Task { await model.deleteEntry(entry) }
     }
 
     private var subtitle: String {

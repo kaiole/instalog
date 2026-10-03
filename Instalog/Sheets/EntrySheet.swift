@@ -9,7 +9,6 @@ struct EntrySheet: View {
     let close: () -> Void
 
     @State private var draft: LoggedEntry
-    @State private var confirmingDelete = false
     @State private var confirmingDiscard = false
     @State private var savingAsMeal = false
     @State private var newMealName = ""
@@ -22,89 +21,81 @@ struct EntrySheet: View {
         _draft = State(initialValue: original)
     }
 
-    private var hasChanges: Bool { draft.foods != original.foods }
+    private var hasChanges: Bool { draft != original }
 
     var body: some View {
         let nutrition = NutritionCalculator.summarize(draft)
         VStack(alignment: .leading, spacing: 0) {
             SheetHeader(
-                title: draft.name,
-                subtitle: "Logged \(Format.time(draft.recordedAt)) · \(model.destinationName(for: draft))",
-                close: requestClose
-            ) {
-                moveMenu
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(NumberFormatting.energy(nutrition[.energy].known)).font(Typeface.mono(26, .semibold))
-                    Text(" kcal").font(Typeface.mono(12)).foregroundStyle(Palette.tertiary)
-                }
-                MacroLine(nutrition: nutrition)
-            }
-            .padding(.horizontal, 4)
-            .padding(.top, 14)
-            Label(note, systemImage: "info.circle")
-                .font(Typeface.sans(13, relativeTo: .footnote))
-                .foregroundStyle(Color(hex: 0xC3CAD0))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Palette.control, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .padding(.top, 12)
+                title: "Edit entry",
+                subtitle: "\(Format.dayHeading(draft.logDate, today: model.today)) · \(Format.time(draft.recordedAt))",
+                close: requestClose)
+                .padding(.horizontal, Spacing.l)
+                .padding(.top, Spacing.l)
             ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(Array(draft.foods.enumerated()), id: \.element.id) { index, food in
-                        DraftItemRow(
-                            item: draftItem(food), defaultWord: "saved",
-                            setQuantity: { draft.foods[index].quantity = $0 })
+                VStack(alignment: .leading, spacing: Spacing.m) {
+                    FormGroup {
+                        FormRow(label: "Name") {
+                            TextField("Entry name", text: $draft.name)
+                                .font(Typeface.body)
+                                .multilineTextAlignment(.trailing)
+                                .submitLabel(.done)
+                        }
+                        FormRow(label: "Section") { sectionPicker }
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
+                        Text(NumberFormatting.energy(nutrition[.energy].known)).font(Typeface.numLarge)
+                        Text("kcal").font(Typeface.sans(14, relativeTo: .subheadline)).foregroundStyle(Palette.secondary)
+                        Spacer(minLength: Spacing.s)
+                        MacroLine(nutrition: nutrition)
+                    }
+                    .padding(.horizontal, Spacing.xs)
+                    .padding(.top, Spacing.xs)
+                    FormGroup(caption: "Foods · \(draft.foods.count)") {
+                        ForEach(draft.foods) { food in
+                            DraftItemRow(
+                                item: draftItem(food), defaultWord: "saved",
+                                setQuantity: { quantity in
+                                    if let index = draft.foods.firstIndex(where: { $0.id == food.id }) {
+                                        draft.foods[index].quantity = quantity
+                                    }
+                                },
+                                showsDivider: false)
+                            .padding(.leading, Spacing.l)
+                            .padding(.trailing, Spacing.m)
+                            // The last food can't be removed; delete the entry instead.
+                            .swipeAction("Remove", isEnabled: draft.foods.count > 1) { remove(food) }
+                        }
+                    }
+                    Label(note, systemImage: "info.circle")
+                        .font(Typeface.footnote)
+                        .foregroundStyle(Palette.secondary)
+                        .padding(.horizontal, Spacing.xs)
+                    if draft.isOneOff {
+                        Button("Save as a meal…") {
+                            newMealName = draft.name
+                            savingAsMeal = true
+                        }
+                        .buttonStyle(TextButtonStyle())
                     }
                 }
-                .padding(.leading, 4)
-                if draft.isOneOff {
-                    Button("Save as a meal…") {
-                        newMealName = draft.name
-                        savingAsMeal = true
-                    }
-                    .font(Typeface.sans(14, .semibold))
-                    .foregroundStyle(Palette.accent)
-                    .frame(minHeight: 44)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-                }
+                .padding(.horizontal, Spacing.l)
+                .padding(.vertical, Spacing.l)
             }
-            .padding(.top, 6)
-            if confirmingDelete {
-                deleteConfirmation
-            } else {
-                HStack(spacing: 10) {
-                    Button {
-                        withAnimation { confirmingDelete = true }
-                    } label: {
-                        Label("Delete…", systemImage: "trash")
-                            .font(Typeface.sans(15, .semibold))
-                            .foregroundStyle(Palette.dangerText)
-                            .padding(.horizontal, 16)
-                            .frame(height: 52)
-                            .background(Palette.control, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    Button(action: save) {
-                        Text(hasChanges ? "Save changes" : "Done")
-                            .font(Typeface.sans(16, .semibold))
-                            .foregroundStyle(Palette.background)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 52)
-                            .background(Palette.text, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+            .scrollDismissesKeyboard(.interactively)
+            HStack(spacing: Spacing.s) {
+                Button(action: delete) { Label("Delete", systemImage: "trash").labelStyle(CompactLabelStyle()) }
+                    .buttonStyle(DestructiveButtonStyle())
+                    .fixedSize(horizontal: true, vertical: false)
                     .disabled(isSaving)
-                }
-                .padding(.top, 14)
+                Button(hasChanges ? "Save" : "Done", action: save)
+                    .buttonStyle(PrimaryButtonStyle())
+                    .disabled(isSaving)
             }
+            .padding(.horizontal, Spacing.l)
+            .padding(.top, Spacing.s)
+            .padding(.bottom, Spacing.l)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 20)
-        .padding(.bottom, 16)
         .foregroundStyle(Palette.text)
         .interactiveDismissDisabled(hasChanges)
         .confirmationDialog("Discard changes to this entry?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
@@ -120,72 +111,53 @@ struct EntrySheet: View {
         }
     }
 
+    private var sectionPicker: some View {
+        Menu {
+            if model.hasSections {
+                ForEach(model.activeSections) { section in
+                    Button(section.name) { draft.assign(to: Destination(section: section)) }
+                }
+            }
+            Button(Destination(section: nil).name) { draft.assign(to: Destination(section: nil)) }
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                Text(model.destinationName(for: draft))
+                Image(systemName: "chevron.up.chevron.down").font(.system(.caption, weight: .semibold))
+                    .foregroundStyle(Palette.tertiary)
+            }
+            .font(Typeface.body)
+            .foregroundStyle(Palette.secondary)
+            .frame(minHeight: Metrics.tapTarget)
+        }
+        .accessibilityLabel("Section, \(model.destinationName(for: draft))")
+    }
+
     private var note: String {
         if let id = draft.mealTemplateID, let meal = model.meal(id: id) {
-            return "Changes apply to this entry only. Your saved “\(meal.name)” stays as it is."
+            return "Changes apply to this entry only. Your saved “\(meal.name)” stays as it is. Nothing is saved until you tap Save."
         }
         return draft.isOneOff
             ? "One-off entry. It isn’t a saved meal unless you choose to save it."
             : "Changes apply to this entry only."
     }
 
-    private var moveMenu: some View {
-        Menu {
-            Section("Move to") {
-                ForEach(model.activeSections.filter { $0.id != draft.sectionID }) { section in
-                    Button(section.name) { Task { await move(to: Destination(section: section)) } }
-                }
-                if draft.sectionID != nil {
-                    Button("Unsectioned") { Task { await move(to: Destination(section: nil)) } }
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.left.arrow.right").font(.system(size: 15, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .foregroundStyle(Palette.secondary)
-                .background(Palette.control, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .accessibilityLabel("Move to another section")
-        .disabled(!model.hasSections)
-    }
-
-    private var deleteConfirmation: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Delete “\(draft.name)” from \(model.destinationName(for: draft))?")
-                .font(Typeface.sans(15, .semibold))
-            Text("Only this entry is removed. Your saved meal stays, and you can undo right after.")
-                .font(Typeface.sans(13))
-                .foregroundStyle(Color(hex: 0xD9B3AE))
-            HStack(spacing: 10) {
-                Button("Keep") { withAnimation { confirmingDelete = false } }
-                    .font(Typeface.sans(15, .semibold))
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(Color(hex: 0x3A2220), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                Button("Delete entry") {
-                    Task {
-                        await model.deleteEntry(original)
-                        close()
-                    }
-                }
-                .font(Typeface.sans(15, .semibold))
-                .foregroundStyle(Color(hex: 0x1A0503))
-                .frame(maxWidth: .infinity, minHeight: 48)
-                .background(Color(hex: 0xFF6B5E), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 8)
-        }
-        .padding(14)
-        .background(Palette.dangerSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color(hex: 0x4A2420)))
-        .padding(.top, 14)
-        .accessibilityElement(children: .contain)
-    }
-
     private func draftItem(_ food: LoggedFoodSnapshot) -> DraftItem {
         DraftItem(
             id: food.id, food: food.asFoodDefinition, quantity: food.quantity, unit: food.unit,
             templateQuantity: draft.mealTemplateID == nil ? nil : food.templateQuantity)
+    }
+
+    private func remove(_ food: LoggedFoodSnapshot) {
+        withAnimation { draft.foods.removeAll { $0.id == food.id } }
+    }
+
+    /// Deletes right away; the Undo toast on the main screen brings it back.
+    private func delete() {
+        Task {
+            await model.deleteEntry(original)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            close()
+        }
     }
 
     private func requestClose() {
@@ -199,21 +171,12 @@ struct EntrySheet: View {
             do {
                 try await model.updateEntry(draft)
                 close()
+            } catch EntryValidationError.noFoods {
+                model.errorMessage = "An entry needs at least one food with an amount above zero. To remove it, delete the entry."
             } catch {
-                model.errorMessage = error is EntryValidationError
-                    ? "An entry needs at least one food with an amount above zero. To remove it, delete the entry."
-                    : "Couldn’t save changes. \(error.localizedDescription)"
+                model.errorMessage = "Couldn’t save changes. \(error.localizedDescription)"
             }
             isSaving = false
-        }
-    }
-
-    private func move(to destination: Destination) async {
-        do {
-            try await model.moveEntry(original, to: destination)
-            close()
-        } catch {
-            model.errorMessage = "Couldn’t move the entry. \(error.localizedDescription)"
         }
     }
 
@@ -230,17 +193,7 @@ struct EntrySheet: View {
             try await model.saveMeal(meal, foods: definitions.filter { model.foods[$0.id] == nil })
             model.toast = Toast(message: "Saved “\(meal.name)” as a meal", undo: nil)
         } catch {
-            model.errorMessage = "Couldn’t save the meal. Give it a name and at least one food."
+            model.errorMessage = "Couldn’t save the meal. \(error.localizedDescription)"
         }
-    }
-}
-
-extension LoggedFoodSnapshot {
-    /// A food definition carrying this snapshot's data, reusing the original food ID when known.
-    var asFoodDefinition: FoodDefinition {
-        FoodDefinition(
-            id: foodID ?? id, source: source, sourceFoodID: sourceFoodID, name: name, brand: brand,
-            preparation: preparation, sourceDataType: sourceDataType, sourceVersion: sourceVersion,
-            nutrition: nutrition)
     }
 }

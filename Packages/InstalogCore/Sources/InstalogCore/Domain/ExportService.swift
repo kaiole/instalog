@@ -108,7 +108,7 @@ public enum ExportService {
             do {
                 try meal.validate(foods: foods)
             } catch {
-                throw ImportError.invalid("meal “\(meal.name)” is invalid (\(error))")
+                throw ImportError.invalid("meal “\(meal.name)” is invalid: \(error.localizedDescription)")
             }
         }
         let mealIDs = Set(data.meals.map(\.id))
@@ -127,7 +127,7 @@ public enum ExportService {
             do {
                 try entry.validate()
             } catch {
-                throw ImportError.invalid("entry “\(entry.name)” on \(entry.logDate) is invalid (\(error))")
+                throw ImportError.invalid("entry “\(entry.name)” on \(entry.logDate) is invalid: \(error.localizedDescription)")
             }
         }
         for target in data.targets {

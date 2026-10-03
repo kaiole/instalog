@@ -2,8 +2,13 @@ import InstalogCore
 import SwiftUI
 
 struct SettingsSheet: View {
-    @Bindable var model: DiaryModel
+    let model: DiaryModel
     let close: () -> Void
+    // Shown immediately while a preference saves, so controls don't flicker or lose quick taps.
+    @State private var pendingAutoAdvance: Bool?
+    @State private var pendingMetrics: [NutrientID]?
+
+    private var shownMetrics: [NutrientID] { pendingMetrics ?? model.preferences.summaryNutrients }
 
     static let summaryChoices: [NutrientID] = [
         .protein, .carbohydrate, .fat, .fiber, .sugars, .addedSugars, .saturatedFat, .sodium, .potassium,
@@ -16,22 +21,22 @@ struct SettingsSheet: View {
                 VStack(alignment: .leading, spacing: 8) {
                     SheetHeader(title: "Settings", close: close)
                     group("Logging") { autoAdvance }
-                    group("Daily summary", trailing: "\(model.preferences.summaryNutrients.count) OF 3") { metrics }
+                    group("Daily summary", trailing: "\(shownMetrics.count) OF \(AppPreferences.maxSummaryNutrients)") { metrics }
                     group("Routine") {
                         VStack(spacing: 0) {
                             link("Order sections and assign meals") { SetupView(model: model, close: nil) }
                             Divider().overlay(Palette.border)
                             link("Saved meals", detail: "\(model.activeMeals.count)") { MealLibraryView(model: model) }
                         }
-                        .cardBackground(Palette.row, radius: 18)
+                        .cardBackground(Palette.raised, radius: 18)
                     }
                     group("Goals") {
                         link("Calorie, macro and nutrient targets") { TargetsView(model: model) }
-                            .cardBackground(Palette.row, radius: 18)
+                            .cardBackground(Palette.raised, radius: 18)
                     }
                     group("Your data") {
                         link("Export or import") { DataView(model: model) }
-                            .cardBackground(Palette.row, radius: 18)
+                            .cardBackground(Palette.raised, radius: 18)
                     }
                     if model.activeMeals.isEmpty, model.catalog != nil {
                         Button("Load demo routine") {
@@ -79,8 +84,18 @@ struct SettingsSheet: View {
     private var autoAdvance: some View {
         let unavailable = model.activeSections.count < 2
         return Toggle(isOn: Binding(
-            get: { model.preferences.autoProgression },
-            set: { value in Task { try? await model.setAutoProgression(value) } }
+            get: { pendingAutoAdvance ?? model.preferences.autoProgression },
+            set: { value in
+                pendingAutoAdvance = value
+                Task {
+                    do {
+                        try await model.setAutoProgression(value)
+                    } catch {
+                        model.errorMessage = "Couldn’t change that setting. \(error.localizedDescription)"
+                    }
+                    pendingAutoAdvance = nil
+                }
+            }
         )) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Auto-advance after logging").font(Typeface.sans(16, .semibold))
@@ -94,14 +109,14 @@ struct SettingsSheet: View {
         .tint(Palette.accent)
         .disabled(unavailable)
         .padding(14)
-        .cardBackground(Palette.row, radius: 18)
+        .cardBackground(Palette.raised, radius: 18)
     }
 
     private var metrics: some View {
-        let selected = model.preferences.summaryNutrients
+        let selected = shownMetrics
         let full = selected.count >= AppPreferences.maxSummaryNutrients
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Pick up to three metrics to show under calories. Hidden nutrients are still tracked.")
+            Text("Pick up to \(AppPreferences.maxSummaryNutrients) metrics to show under calories. At least one stays on. Hidden nutrients are still tracked.")
                 .font(Typeface.sans(14))
                 .foregroundStyle(Palette.secondary)
             FlowLayout(spacing: 8) {
@@ -110,13 +125,24 @@ struct SettingsSheet: View {
                     Button {
                         var updated = selected
                         if isOn {
-                            guard updated.count > 1 else { return }
+                            guard updated.count > 1 else {
+                                model.errorMessage = "Keep at least one metric under calories."
+                                return
+                            }
                             updated.removeAll { $0 == id }
                         } else {
                             guard !full else { return }
                             updated.append(id)
                         }
-                        Task { try? await model.setSummaryNutrients(updated) }
+                        pendingMetrics = updated
+                        Task {
+                            do {
+                                try await model.setSummaryNutrients(updated)
+                            } catch {
+                                model.errorMessage = "Couldn’t change the summary. \(error.localizedDescription)"
+                            }
+                            if pendingMetrics == updated { pendingMetrics = nil }
+                        }
                     } label: {
                         HStack(spacing: 8) {
                             RoundedRectangle(cornerRadius: 2).fill(Palette.nutrientColor(id)).frame(width: 8, height: 8)
@@ -126,8 +152,8 @@ struct SettingsSheet: View {
                         .font(Typeface.sans(14, .medium))
                         .padding(.horizontal, 14)
                         .frame(minHeight: 44)
-                        .background(isOn ? Color(hex: 0x2A3036) : .clear, in: Capsule())
-                        .overlay(Capsule().stroke(isOn ? Color(hex: 0x5A646D) : Palette.outline))
+                        .background(isOn ? Palette.badge : .clear, in: Capsule())
+                        .overlay(Capsule().stroke(isOn ? Palette.handle : Palette.outline))
                     }
                     .buttonStyle(.plain)
                     .disabled(!isOn && full)
@@ -137,7 +163,7 @@ struct SettingsSheet: View {
             }
         }
         .padding(16)
-        .cardBackground(Palette.row, radius: 18)
+        .cardBackground(Palette.raised, radius: 18)
     }
 
     private func link<Destination: View>(_ title: String, detail: String? = nil, @ViewBuilder destination: @escaping () -> Destination) -> some View {
@@ -198,7 +224,7 @@ struct FlowLayout: Layout {
 }
 
 struct ErrorAlert: ViewModifier {
-    @Bindable var model: DiaryModel
+    let model: DiaryModel
 
     func body(content: Content) -> some View {
         content.alert(

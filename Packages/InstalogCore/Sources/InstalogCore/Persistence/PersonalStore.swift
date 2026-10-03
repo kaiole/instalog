@@ -61,6 +61,10 @@ public protocol PersonalStore: Sendable {
     func loadConfiguration() async throws -> PersonalConfiguration
     func entries(on date: LogDate) async throws -> [LoggedEntry]
     func allEntries() async throws -> [LoggedEntry]
+    /// The most recently dated entries, newest first.
+    func recentEntries(limit: Int) async throws -> [LoggedEntry]
+    /// Days in `first...last` that have at least one entry.
+    func datesWithEntries(from first: LogDate, through last: LogDate) async throws -> Set<LogDate>
     /// Applies every operation in one transaction, or none of them.
     func apply(_ operations: [StoreOperation]) async throws
     /// Atomically replaces all personal data (navigation memory is cleared).
@@ -141,6 +145,22 @@ public actor SQLitePersonalStore: PersonalStore {
 
     public func allEntries() throws -> [LoggedEntry] {
         try documents("SELECT json FROM entries ORDER BY log_date, recorded_at, id")
+    }
+
+    public func datesWithEntries(from first: LogDate, through last: LogDate) throws -> Set<LogDate> {
+        let statement = try connection.prepare("SELECT DISTINCT log_date FROM entries WHERE log_date BETWEEN ? AND ?")
+        try statement.bind([.text(first.description), .text(last.description)])
+        var dates = Set<LogDate>()
+        while try statement.step() {
+            if let text = statement.text(0), let date = LogDate(string: text) { dates.insert(date) }
+        }
+        return dates
+    }
+
+    public func recentEntries(limit: Int) throws -> [LoggedEntry] {
+        try documents(
+            "SELECT json FROM entries ORDER BY log_date DESC, recorded_at DESC, id DESC LIMIT ?",
+            [.integer(Int64(max(0, limit)))])
     }
 
     public func apply(_ operations: [StoreOperation]) throws {

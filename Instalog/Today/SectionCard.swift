@@ -3,19 +3,34 @@ import SwiftUI
 
 /// The current section: its logged entries first, then the meal chooser and the selected meal.
 struct SectionCard: View {
-    @Bindable var model: DiaryModel
+    let model: DiaryModel
     @Binding var sheet: ActiveSheet?
-    @State private var loggedExpanded = false
+    /// False when the whole screen scrolls (accessibility text sizes), so the card doesn't nest a scroll view.
+    var scrollsInternally = true
+    @State private var loggedExpanded = true
     @State private var revealedEntryID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                VStack(spacing: 14) {
+            if scrollsInternally {
+                ScrollView { content }
+                    .scrollDismissesKeyboard(.interactively)
+            } else {
+                content
+            }
+        }
+        .padding(Spacing.s)
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous).stroke(Palette.border))
+        .onChange(of: model.currentDestination.id) { revealedEntryID = nil }
+    }
+
+    private var content: some View {
+                VStack(spacing: Spacing.m) {
                     LoggedEntriesGroup(
-                        model: model, entries: model.currentEntries, emptyText: emptyText,
-                        isExpanded: $loggedExpanded, revealedEntryID: $revealedEntryID,
+                        model: model, entries: model.currentEntries, sectionName: model.currentDestination.name,
+                        emptyText: emptyText, isExpanded: $loggedExpanded, revealedEntryID: $revealedEntryID,
                         open: { sheet = .entry($0.id) })
                     if model.selectedMeal != nil {
                         MealChooser(model: model)
@@ -28,23 +43,14 @@ struct SectionCard: View {
                             loadDemo: { Task { await loadDemo() } })
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 14)
-            }
-            .scrollDismissesKeyboard(.interactively)
-        }
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Palette.border))
-        .onChange(of: model.currentDestination.id) {
-            loggedExpanded = false
-            revealedEntryID = nil
-        }
+                .padding(.bottom, Spacing.xs)
     }
 
     private var emptyText: String {
         let destination = model.currentDestination
-        if !model.hasSections { return "Nothing logged today yet." }
-        return destination.isUnsectioned ? "No unsectioned entries." : "Nothing logged in \(destination.name) yet."
+        let day = model.isViewingToday ? "today" : "on this day"
+        if !model.hasSections || destination.isUnsectioned { return "Nothing logged \(day) yet." }
+        return "Nothing logged in \(destination.name) \(day) yet."
     }
 
     private func loadDemo() async {
@@ -61,44 +67,43 @@ struct SectionCard: View {
         let destination = model.currentDestination
         let canBrowse = destinations.count > 1
 
-        return HStack(alignment: .center, spacing: 8) {
+        return HStack(alignment: .center, spacing: Spacing.s) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
+                HStack(spacing: Spacing.s) {
                     Caption(positionText(destination: destination, index: index, count: destinations.count))
                     if model.hasSections {
                         HStack(spacing: 3) {
                             ForEach(destinations.indices, id: \.self) { i in
                                 Capsule()
-                                    .fill(i == index ? Palette.accent : Palette.outline)
-                                    .frame(width: i == index ? 16 : 6, height: 4)
+                                    .fill(i == index ? Palette.accent : Palette.handle)
+                                    .frame(width: i == index ? 14 : 6, height: 4)
                             }
                         }
                         .accessibilityHidden(true)
                     }
                 }
-                .frame(height: 16)
+                .frame(minHeight: 16)
                 if model.hasSections {
                     Button { sheet = .sections } label: {
                         HStack(spacing: 6) {
-                            Text(destination.isUnsectioned ? "Unsectioned" : destination.name)
-                                .font(Typeface.sans(28, .semibold, relativeTo: .largeTitle))
+                            Text(destination.name)
+                                .font(Typeface.title1)
                                 .tracking(-0.5)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.6)
+                                .multilineTextAlignment(.leading)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.system(.body, weight: .semibold))
                                 .foregroundStyle(Palette.secondary)
                         }
-                        .frame(minHeight: 44)
+                        .frame(minHeight: Metrics.tapTarget)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(destination.name), section \(index + 1) of \(destinations.count)")
                     .accessibilityHint("Shows all sections")
                 } else {
-                    Text("Daily log")
-                        .font(Typeface.sans(28, .semibold, relativeTo: .largeTitle))
+                    Text(destination.name)
+                        .font(Typeface.title1)
                         .tracking(-0.5)
-                        .frame(minHeight: 44)
+                        .frame(minHeight: Metrics.tapTarget)
                         .accessibilityAddTraits(.isHeader)
                 }
             }
@@ -106,22 +111,21 @@ struct SectionCard: View {
             if canBrowse {
                 HStack(spacing: 6) {
                     Button { withAnimation(.snappy) { model.browseDestinations(by: -1) } } label: {
-                        Image(systemName: "chevron.up").font(.system(size: 17, weight: .semibold))
+                        Image(systemName: "chevron.up")
                     }
                     .buttonStyle(IconButtonStyle())
                     .accessibilityLabel("Previous section: \(destinations[(index - 1 + destinations.count) % destinations.count].name)")
                     Button { withAnimation(.snappy) { model.browseDestinations(by: 1) } } label: {
-                        Image(systemName: "chevron.down").font(.system(size: 17, weight: .semibold))
+                        Image(systemName: "chevron.down")
                     }
                     .buttonStyle(IconButtonStyle())
                     .accessibilityLabel("Next section: \(destinations[(index + 1) % destinations.count].name)")
                 }
             }
         }
-        .padding(.leading, 18)
-        .padding(.trailing, 10)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.leading, Spacing.s)
+        .padding(.vertical, Spacing.xs)
+        .padding(.bottom, Spacing.s)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 24).onEnded { value in
@@ -135,24 +139,24 @@ struct SectionCard: View {
 
     private func positionText(destination: Destination, index: Int, count: Int) -> String {
         if !model.hasSections { return "No sections" }
-        if destination.isUnsectioned { return "Other entries" }
+        if destination.isUnsectioned { return "Outside your sections" }
         return "Section \(index + 1) of \(count)"
     }
 }
 
 struct MealChooser: View {
-    @Bindable var model: DiaryModel
+    let model: DiaryModel
 
     var body: some View {
         let meals = model.currentMeals
         let selected = model.selectedMeal?.id
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
             HStack {
                 Caption(label)
                 Spacer()
                 if let index = model.selectedMealIndex {
                     Text("\(index + 1) of \(meals.count)")
-                        .font(Typeface.mono(11, relativeTo: .caption2))
+                        .font(Typeface.caption)
                         .foregroundStyle(Palette.tertiary)
                 }
             }
@@ -190,33 +194,33 @@ struct NoMealsCard: View {
     let createMeal: () -> Void
     let loadDemo: () -> Void
 
+    @ViewBuilder
+    private var actions: some View {
+        Button("Create a saved meal", action: createMeal)
+            .buttonStyle(SecondaryButtonStyle())
+        if canLoadDemo {
+            Button("Load demo routine", action: loadDemo)
+                .buttonStyle(TextButtonStyle())
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Caption("No saved meals yet")
             Text("Save the meals you eat most, and they’ll be waiting here, ready to log.")
                 .font(Typeface.sans(20, .semibold, relativeTo: .title3))
-            Text("Until then, Add food logs anything into \(destinationName == "Daily log" ? "today" : destinationName). You can save a meal from any entry later.")
+            Text("Until then, Add food logs anything into \(destinationName). You can save a meal from any entry later.")
                 .font(Typeface.sans(14, relativeTo: .subheadline))
                 .foregroundStyle(Palette.secondary)
-            HStack(spacing: 8) {
-                Button("Create a saved meal", action: createMeal)
-                    .font(Typeface.sans(14, .semibold))
-                    .padding(.horizontal, 16)
-                    .frame(minHeight: 44)
-                    .background(Color(hex: 0x262C31), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                if canLoadDemo {
-                    Button("Load demo routine", action: loadDemo)
-                        .font(Typeface.sans(14, .semibold))
-                        .foregroundStyle(Palette.accent)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 44)
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Spacing.s) { actions }
+                VStack(alignment: .leading, spacing: Spacing.s) { actions }
             }
             .padding(.top, 6)
         }
         .foregroundStyle(Palette.text)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 22)
+        .padding(.horizontal, Spacing.l)
+        .padding(.vertical, Spacing.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardBackground()
     }

@@ -60,6 +60,7 @@ public struct LoggingService: Sendable {
     /// Saves edits to one logged instance. Templates and other entries are untouched.
     public func update(_ entry: LoggedEntry) async throws -> LoggedEntry {
         var updated = entry
+        updated.name = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.foods = entry.foods.filter { $0.quantity > 0 }
         updated.updatedAt = now()
         try updated.validate()

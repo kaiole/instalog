@@ -8,6 +8,8 @@ public enum TargetSource: Hashable, Sendable, Codable {
 /// A user-set goal, limit or reference for one nutrient, effective from a date onward.
 /// A disabled record hides any target or reference for that nutrient; it is not a target of zero.
 public struct NutritionTarget: Hashable, Sendable, Codable, Identifiable {
+    public static let maximumAmount = 1_000_000.0
+
     public var id: UUID
     public var nutrientID: NutrientID
     public var kind: TargetKind

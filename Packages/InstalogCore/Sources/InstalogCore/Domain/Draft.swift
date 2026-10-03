@@ -55,7 +55,7 @@ public enum QuantityStep {
 
     public static func increase(_ quantity: Double, unit: MeasureUnit) -> Double {
         let step = step(for: unit, quantity: quantity)
-        return ((quantity + step) / step).rounded(.down) * step
+        return QuantityInput.clamp(((quantity + step) / step).rounded(.down) * step, unit: unit)
     }
 
     public static func decrease(_ quantity: Double, unit: MeasureUnit) -> Double {

@@ -24,12 +24,16 @@ public struct FoodDefinition: Hashable, Sendable, Codable, Identifiable {
     public var derivations: [NutrientID: String]
     public var createdAt: Date
     public var updatedAt: Date
+    /// Set when a custom food is deleted. Archived foods are hidden from search but kept so
+    /// saved meals and exports that reference them stay valid.
+    public var archivedAt: Date?
 
     public init(
         id: UUID = UUID(), source: FoodSource, sourceFoodID: String? = nil, name: String, brand: String? = nil,
         preparation: String? = nil, category: String? = nil, sourceDataType: String? = nil,
         sourceVersion: String? = nil, retrievedAt: Date? = nil, nutrition: FoodNutrition,
-        derivations: [NutrientID: String] = [:], createdAt: Date = Date(), updatedAt: Date? = nil
+        derivations: [NutrientID: String] = [:], createdAt: Date = Date(), updatedAt: Date? = nil,
+        archivedAt: Date? = nil
     ) {
         self.id = id
         self.source = source
@@ -45,7 +49,10 @@ public struct FoodDefinition: Hashable, Sendable, Codable, Identifiable {
         self.derivations = derivations
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.archivedAt = archivedAt
     }
+
+    public var isArchived: Bool { archivedAt != nil }
 
     /// Identity of the catalog record this food was copied from, if any.
     public var catalogKey: String? {
@@ -70,13 +77,20 @@ public enum FoodValidationError: Error, Equatable, Sendable {
 }
 
 public extension FoodDefinition {
+    static let maximumBasisAmount = 10_000.0
+    static let maximumNutrientValue = 1_000_000.0
+
     /// Rules for user-created foods: a name, a positive basis, and at least one explicitly supplied
     /// finite, nonnegative nutrient value. Blank nutrients stay unknown.
     static func validateCustom(name: String, nutrition: FoodNutrition) throws {
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw FoodValidationError.blankName }
-        if !nutrition.basis.isValid { throw FoodValidationError.invalidBasis }
+        if !nutrition.basis.isValid || nutrition.basis.amount > maximumBasisAmount {
+            throw FoodValidationError.invalidBasis
+        }
         if nutrition.nutrients.isEmpty { throw FoodValidationError.noNutrients }
-        if !nutrition.nutrients.isValid { throw FoodValidationError.invalidNutrientValue }
+        if !nutrition.nutrients.isValid || nutrition.nutrients.values.values.contains(where: { $0 > maximumNutrientValue }) {
+            throw FoodValidationError.invalidNutrientValue
+        }
         if !nutrition.portions.allSatisfy(\.isValid) { throw FoodValidationError.invalidPortion }
         if let density = nutrition.density, !(density.isFinite && density > 0) {
             throw FoodValidationError.invalidPortion

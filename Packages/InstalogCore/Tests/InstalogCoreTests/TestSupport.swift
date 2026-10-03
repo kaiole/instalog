@@ -69,6 +69,7 @@ final class TestClock: @unchecked Sendable {
 actor ControllableStore: PersonalStore {
     let inner: SQLitePersonalStore
     var failApplies = false
+    var failLoads = false
     var applyDelayNanoseconds: UInt64 = 0
     private(set) var applyCount = 0
 
@@ -77,11 +78,19 @@ actor ControllableStore: PersonalStore {
     }
 
     func setFailApplies(_ value: Bool) { failApplies = value }
+    func setFailLoads(_ value: Bool) { failLoads = value }
     func setDelay(_ nanoseconds: UInt64) { applyDelayNanoseconds = nanoseconds }
 
-    func loadConfiguration() async throws -> PersonalConfiguration { try await inner.loadConfiguration() }
+    func loadConfiguration() async throws -> PersonalConfiguration {
+        if failLoads { throw SQLiteError(code: 14, message: "simulated open failure") }
+        return try await inner.loadConfiguration()
+    }
     func entries(on date: LogDate) async throws -> [LoggedEntry] { try await inner.entries(on: date) }
     func allEntries() async throws -> [LoggedEntry] { try await inner.allEntries() }
+    func recentEntries(limit: Int) async throws -> [LoggedEntry] { try await inner.recentEntries(limit: limit) }
+    func datesWithEntries(from first: LogDate, through last: LogDate) async throws -> Set<LogDate> {
+        try await inner.datesWithEntries(from: first, through: last)
+    }
 
     func apply(_ operations: [StoreOperation]) async throws {
         applyCount += 1

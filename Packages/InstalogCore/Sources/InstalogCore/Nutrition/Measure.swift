@@ -183,3 +183,15 @@ public struct FoodNutrition: Hashable, Sendable, Codable {
             && (density.map { $0.isFinite && $0 > 0 } ?? true)
     }
 }
+
+public extension FoodNutrition {
+    /// The same amount of food expressed in another unit, rounded to two decimals and clamped to
+    /// what can be entered. Nil when the units can't be converted for this food.
+    func convert(quantity: Double, from: MeasureUnit, to: MeasureUnit) -> Double? {
+        guard from != to else { return quantity }
+        guard let source = try? basisMultiple(quantity: quantity, unit: from),
+            let perTarget = try? basisMultiple(quantity: 1, unit: to), perTarget > 0
+        else { return nil }
+        return QuantityInput.clamp(((source / perTarget) * 100).rounded() / 100, unit: to)
+    }
+}

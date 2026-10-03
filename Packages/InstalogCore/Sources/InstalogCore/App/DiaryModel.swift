@@ -12,6 +12,14 @@ public struct Destination: Hashable, Sendable, Identifiable {
     public var isUnsectioned: Bool { section == nil }
 }
 
+public extension LoggedEntry {
+    /// Files the entry under a destination, keeping a name snapshot for history.
+    mutating func assign(to destination: Destination) {
+        sectionID = destination.section?.id
+        sectionName = destination.section?.name
+    }
+}
+
 public struct Toast: Identifiable, Sendable {
     public enum Undo: Sendable {
         case removeLogged(LoggedEntry, previousDestinationID: String, previousDraft: [UUID: Double]?, draftKey: String)
@@ -26,6 +34,16 @@ public struct Toast: Identifiable, Sendable {
         self.message = message
         self.undo = undo
     }
+}
+
+/// A food the user logged recently, with the amount they used last time.
+public struct RecentFood: Identifiable, Hashable, Sendable {
+    public var food: FoodDefinition
+    public var quantity: Double
+    public var unit: MeasureUnit
+    public var loggedOn: LogDate
+
+    public var id: UUID { food.id }
 }
 
 public struct FoodSearchOutcome: Sendable {
@@ -98,7 +116,7 @@ public final class DiaryModel {
             isLoaded = true
             loadError = nil
         } catch {
-            loadError = "Couldn’t open your data: \(error)"
+            loadError = "Couldn’t open your data. \(error.localizedDescription)"
         }
     }
 
@@ -185,7 +203,8 @@ public final class DiaryModel {
         return currentMeals.firstIndex(of: meal)
     }
 
-    private var draftKey: String { "\(currentDestination.id)|\(selectedMeal?.id.uuidString ?? "")" }
+    /// Draft edits belong to one day, one destination and one meal.
+    private var draftKey: String { "\(viewedDate)|\(currentDestination.id)|\(selectedMeal?.id.uuidString ?? "")" }
 
     /// The selected meal at today's quantities. Not counted until logged.
     public var draftItems: [DraftItem] {
@@ -209,17 +228,11 @@ public final class DiaryModel {
 
     public var dayNutrition: NutritionSummary { NutritionCalculator.summarize(entries: entries) }
 
-    public func nutrition(for destination: Destination) -> NutritionSummary {
-        NutritionCalculator.summarize(entries: entries(in: destination))
-    }
+    /// Targets in effect on the viewed day, for totals and progress.
+    public var effectiveTargets: [NutrientID: EffectiveTarget] { effectiveTargets(on: viewedDate) }
 
-    public var effectiveTargets: [NutrientID: EffectiveTarget] {
-        TargetResolver.effectiveTargets(
-            on: viewedDate, targets: targets, showReferences: preferences.showReferenceValues)
-    }
-
-    public func comparison(for nutrient: NutrientID) -> TargetComparison {
-        TargetResolver.compare(dayNutrition[nutrient], with: effectiveTargets[nutrient])
+    public func effectiveTargets(on date: LogDate) -> [NutrientID: EffectiveTarget] {
+        TargetResolver.effectiveTargets(on: date, targets: targets, showReferences: preferences.showReferenceValues)
     }
 
     /// The most recent entry of the selected meal in this destination, if any.
@@ -272,7 +285,7 @@ public final class DiaryModel {
 
     public func setDraftQuantity(_ quantity: Double, for itemID: UUID) {
         guard quantity.isFinite, let item = draftItems.first(where: { $0.id == itemID }) else { return }
-        let value = max(0, quantity)
+        let value = QuantityInput.clamp(quantity, unit: item.unit)
         var overrides = draftQuantities[draftKey] ?? [:]
         if let template = item.templateQuantity, abs(template - value) < 1e-9 {
             overrides[itemID] = nil
@@ -284,10 +297,6 @@ public final class DiaryModel {
 
     public func resetDraft() {
         draftQuantities[draftKey] = nil
-    }
-
-    public func discardAllDrafts() {
-        draftQuantities = [:]
     }
 
     private func persistNavigation() {
@@ -340,7 +349,7 @@ public final class DiaryModel {
                 undo: .removeLogged(entry, previousDestinationID: destination.id, previousDraft: previousDraft, draftKey: key))
             return true
         } catch {
-            errorMessage = "Couldn’t save. Nothing was logged. (\(error.localizedDescription))"
+            errorMessage = "Nothing was logged. \(error.localizedDescription)"
             return false
         }
     }
@@ -384,15 +393,18 @@ public final class DiaryModel {
     }
 
     public func updateEntry(_ entry: LoggedEntry) async throws {
+        let previous = entries.first { $0.id == entry.id }
         let saved = try await logging.update(entry)
         replaceLocally(saved)
+        if let previous, previous.sectionID != saved.sectionID {
+            toast = Toast(message: "Moved \(saved.name) to \(destinationName(for: saved))", undo: nil)
+        }
     }
 
     /// Moves an entry to another destination without changing its foods, nutrition or time.
     public func moveEntry(_ entry: LoggedEntry, to destination: Destination) async throws {
         var moved = entry
-        moved.sectionID = destination.section?.id
-        moved.sectionName = destination.section?.name
+        moved.assign(to: destination)
         let saved = try await logging.update(moved)
         replaceLocally(saved)
         toast = Toast(message: "Moved \(entry.name) to \(destination.name)", undo: nil)
@@ -405,7 +417,7 @@ public final class DiaryModel {
             toast = Toast(
                 message: "Deleted \(entry.name) from \(destinationName(for: entry))", undo: .restoreDeleted(entry))
         } catch {
-            errorMessage = "Couldn’t delete \(entry.name). (\(error.localizedDescription))"
+            errorMessage = "Couldn’t delete \(entry.name). \(error.localizedDescription)"
         }
     }
 
@@ -427,7 +439,7 @@ public final class DiaryModel {
                 insertLocally(entry)
             }
         } catch {
-            errorMessage = "Couldn’t undo. (\(error.localizedDescription))"
+            errorMessage = "Couldn’t undo. \(error.localizedDescription)"
         }
     }
 
@@ -435,7 +447,7 @@ public final class DiaryModel {
         if let id = entry.sectionID, let section = sections.first(where: { $0.id == id }) {
             return section.isArchived ? "\(section.name) (removed)" : section.name
         }
-        return entry.sectionName ?? (hasSections ? "Unsectioned" : "today")
+        return entry.sectionName ?? Destination(section: nil).name
     }
 
     private func insertLocally(_ entry: LoggedEntry) {
@@ -451,8 +463,21 @@ public final class DiaryModel {
 
     // MARK: Dates
 
+    public var canShowNextDay: Bool { viewedDate < today }
+
+    /// Days between `first` and `last` (inclusive) that have entries, for marking a calendar.
+    /// Empty when the store can't be read; the marks are a convenience, not data.
+    public func daysWithEntries(from first: LogDate, through last: LogDate) async -> Set<LogDate> {
+        (try? await store.datesWithEntries(from: first, through: last)) ?? []
+    }
+
+    /// Shows the day before (-1) or after (+1) the viewed one. Never moves past today.
+    public func showAdjacentDay(_ step: Int) async {
+        await changeDate(to: viewedDate.adding(days: step, calendar: calendar))
+    }
+
     public func changeDate(to date: LogDate) async {
-        guard date != viewedDate else { return }
+        guard date != viewedDate, date <= today else { return }
         do {
             let loaded = try await store.entries(on: date)
             navigationByDate[viewedDate] = (currentDestination.id, mealSelections)
@@ -460,7 +485,7 @@ public final class DiaryModel {
             entries = loaded
             showNavigation(for: date)
         } catch {
-            errorMessage = "Couldn’t load \(date). (\(error.localizedDescription))"
+            errorMessage = "Couldn’t load that day. \(error.localizedDescription)"
         }
     }
 
@@ -478,14 +503,41 @@ public final class DiaryModel {
             draftQuantities = [:]
             showNavigation(for: now)
         } catch {
-            errorMessage = "Couldn’t load today. (\(error.localizedDescription))"
+            errorMessage = "Couldn’t load today. \(error.localizedDescription)"
         }
     }
 
     // MARK: Foods and search
 
     public var customFoods: [FoodDefinition] {
-        foods.values.filter { $0.source == .custom }.sorted { $0.name < $1.name }
+        foods.values.filter { $0.source == .custom && !$0.isArchived }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Foods from the most recent entries, newest first, each once, with the amount last used.
+    public func recentFoods(limit: Int = 10) async -> [RecentFood] {
+        guard let recent = try? await store.recentEntries(limit: 60) else { return [] }
+        var seen = Set<String>()
+        var result: [RecentFood] = []
+        for entry in recent {
+            for snapshot in entry.foods.reversed() {
+                guard let key = snapshot.catalogKey ?? snapshot.foodID?.uuidString, seen.insert(key).inserted,
+                    let food = resolve(snapshot)
+                else { continue }
+                result.append(RecentFood(food: food, quantity: snapshot.quantity, unit: snapshot.unit, loggedOn: entry.logDate))
+                if result.count == limit { return result }
+            }
+        }
+        return result
+    }
+
+    /// The current personal food for a logged snapshot. Custom foods that were deleted are skipped.
+    private func resolve(_ snapshot: LoggedFoodSnapshot) -> FoodDefinition? {
+        if let id = snapshot.foodID, let food = foods[id] { return food.isArchived ? nil : food }
+        if let key = snapshot.catalogKey {
+            return foods.values.first { $0.catalogKey == key } ?? snapshot.asFoodDefinition
+        }
+        return nil
     }
 
     public func searchFoods(_ query: String) async -> FoodSearchOutcome {
@@ -493,7 +545,7 @@ public final class DiaryModel {
         let words = trimmed.lowercased().split(separator: " ")
         let personal = foods.values
             .filter { food in
-                food.source == .custom
+                food.source == .custom && !food.isArchived
                     && !words.isEmpty
                     && words.allSatisfy { word in
                         food.name.lowercased().contains(word) || (food.brand?.lowercased().contains(word) ?? false)
@@ -522,12 +574,34 @@ public final class DiaryModel {
         return fresh
     }
 
+    /// Creates or updates a custom food. Saved meals that use it must still be valid afterwards.
     public func saveCustomFood(_ food: FoodDefinition) async throws {
         try FoodDefinition.validateCustom(name: food.name, nutrition: food.nutrition)
         var saved = food
         saved.updatedAt = clock()
+        if foods[food.id] != nil {
+            let updatedFoods = foods.merging([(saved.id, saved)], uniquingKeysWith: { $1 })
+            for meal in meals(using: food.id) { try meal.validate(foods: updatedFoods) }
+        }
         try await store.apply([.putFood(saved)])
         foods[saved.id] = saved
+    }
+
+    /// Active saved meals that include the food.
+    public func meals(using foodID: UUID) -> [MealTemplate] {
+        activeMeals.filter { meal in meal.items.contains { $0.foodID == foodID } }
+    }
+
+    /// Hides a custom food from search and lists. Refused while an active saved meal uses it;
+    /// logged entries keep their own snapshots either way.
+    public func archiveCustomFood(id: UUID) async throws {
+        guard var food = foods[id], food.source == .custom, !food.isArchived else { return }
+        let using = meals(using: id)
+        guard using.isEmpty else { throw FoodInUseError(mealNames: using.map(\.name)) }
+        food.archivedAt = clock()
+        food.updatedAt = clock()
+        try await store.apply([.putFood(food)])
+        foods[id] = food
     }
 
     // MARK: Saved meals
@@ -599,10 +673,6 @@ public final class DiaryModel {
     /// Reorders active sections. The new order drives browsing, new-day start and progression.
     public func moveSections(from source: IndexSet, to destination: Int) async throws {
         try await saveOrder(of: activeSections.moving(fromOffsets: source, toOffset: destination))
-    }
-
-    public func reorderSections(_ ordered: [RoutineSection]) async throws {
-        try await saveOrder(of: ordered)
     }
 
     private func saveOrder(of ordered: [RoutineSection]) async throws {
@@ -687,7 +757,7 @@ public final class DiaryModel {
     /// nutrient's first-ever record applies to all days, since nothing was in effect before.
     public func setTarget(_ nutrient: NutrientID, amount: Double, kind: TargetKind) async throws {
         guard let definition = NutrientRegistry.definition(for: nutrient) else { return }
-        guard amount.isFinite, amount >= 0 else { throw TargetValueError() }
+        guard amount.isFinite, amount >= 0, amount <= NutritionTarget.maximumAmount else { throw TargetValueError() }
         try await saveTarget(
             nutrient, kind: kind, amount: amount, unit: definition.unit, form: definition.form, enabled: true,
             source: .user)
@@ -696,7 +766,7 @@ public final class DiaryModel {
     /// Hides any target or reference for the nutrient from today onward.
     public func disableTarget(_ nutrient: NutrientID) async throws {
         guard let definition = NutrientRegistry.definition(for: nutrient) else { return }
-        let current = effectiveTargets[nutrient]
+        let current = effectiveTargets(on: today)[nutrient]
         try await saveTarget(
             nutrient, kind: current?.kind ?? .target, amount: current?.amount ?? 0, unit: definition.unit,
             form: definition.form, enabled: false, source: .user)
@@ -772,3 +842,6 @@ public final class DiaryModel {
 public struct LoggingBusyError: Error {}
 public struct SectionNameError: Error {}
 public struct TargetValueError: Error {}
+public struct FoodInUseError: Error, Equatable {
+    public let mealNames: [String]
+}
