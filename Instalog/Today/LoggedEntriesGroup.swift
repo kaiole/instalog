@@ -115,8 +115,9 @@ struct LoggedEntryRow: View {
                 .buttonStyle(.plain)
                 .accessibilityHidden(true)
             }
-            Button(action: open) {
-                HStack(spacing: Spacing.m) {
+            // A tap gesture rather than a Button: a Button would also fire at the end of a swipe,
+            // opening the sheet over a row that was just deleted.
+            HStack(spacing: Spacing.m) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(entry.name).font(Typeface.bodyMedium)
                         Text(subtitle)
@@ -137,8 +138,7 @@ struct LoggedEntryRow: View {
                 .frame(minHeight: Metrics.formRow)
                 .background(Palette.raised)
                 .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                .onTapGesture(perform: open)
             .offset(x: offset)
             .animation(.easeOut(duration: 0.2), value: isRevealed)
         }
@@ -161,6 +161,8 @@ struct LoggedEntryRow: View {
                 }
         )
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, open)
         .accessibilityLabel("\(entry.name), logged \(Format.time(entry.recordedAt)), \(NumberFormatting.energy(energy.known)) calories")
         .accessibilityHint("Opens the entry")
         .accessibilityAction(named: "Delete", delete)

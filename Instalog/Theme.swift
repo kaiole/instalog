@@ -450,11 +450,35 @@ enum Format {
         date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// "Today", "Yesterday", a weekday within the past week, otherwise a date ("Sep 10").
     static func dayHeading(_ date: LogDate, today: LogDate) -> String {
         if date == today { return "Today" }
         if date == today.adding(days: -1) { return "Yesterday" }
         if date == today.adding(days: 1) { return "Tomorrow" }
-        return date.startOfDay().formatted(.dateTime.weekday(.wide))
+        if date < today, date >= today.adding(days: -6) {
+            return date.startOfDay().formatted(.dateTime.weekday(.wide))
+        }
+        return date.startOfDay().formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// A unit name short enough for a stepper: USDA portions like
+    /// "medium (7\" to 7-7/8\" long)" become "medium". Full names stay in the unit menu.
+    static func unitName(_ label: String) -> String {
+        var name = label
+        if let cut = name.firstIndex(where: { $0 == "(" || $0 == "," }) { name = String(name[..<cut]) }
+        name = name.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { name = label }
+        return name.count > 12 ? String(name.prefix(11)) + "…" : name
+    }
+
+    /// The small caps stamp beside the day title. When the title is already a date, only the weekday.
+    static func dayStamp(_ date: LogDate, today: LogDate) -> String {
+        let heading = dayHeading(date, today: today)
+        let weekday = date.startOfDay().formatted(.dateTime.weekday(.wide))
+        if heading != "Today", heading != "Yesterday", heading != "Tomorrow", heading != weekday {
+            return date.startOfDay().formatted(.dateTime.weekday(.abbreviated)).uppercased()
+        }
+        return dayStamp(date)
     }
 
     static func dayStamp(_ date: LogDate) -> String {
@@ -467,14 +491,16 @@ enum Format {
         date.startOfDay().formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
     }
 
-    /// The number alone ("12"), or "unknown".
+    /// The number alone ("12"), "0" when nothing is logged, or "unknown".
     static func amount(_ total: NutrientTotal, unit: NutrientUnit) -> String {
+        if total.completeness == .empty { return "0" }
         guard let value = total.displayAmount else { return unknown }
         return unit == .kilocalorie ? NumberFormatting.energy(value) : NumberFormatting.nutrient(value)
     }
 
     /// The number with its unit, spaced ("12 g", "433 kcal"), or "unknown".
     static func amountWithUnit(_ total: NutrientTotal, unit: NutrientUnit) -> String {
+        if total.completeness == .empty { return NumberFormatting.nutrient(0, unit: unit) }
         guard let value = total.displayAmount else { return unknown }
         return NumberFormatting.nutrient(value, unit: unit)
     }

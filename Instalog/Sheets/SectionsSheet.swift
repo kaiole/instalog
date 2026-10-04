@@ -142,13 +142,19 @@ struct DayPickerSheet: View {
         let weekdays = Array(symbols[first...] + symbols[..<first])
         let leading = (calendar.component(.weekday, from: month.startOfDay(in: calendar)) - calendar.firstWeekday + 7) % 7
         let count = calendar.range(of: .day, in: .month, for: month.startOfDay(in: calendar))?.count ?? 30
-        return LazyVGrid(columns: columns, spacing: Spacing.xs) {
-            ForEach(Array(weekdays.enumerated()), id: \.offset) { _, symbol in
-                Text(symbol).font(Typeface.caption).foregroundStyle(Palette.tertiary).accessibilityHidden(true)
+        // Every cell needs an id unique within its grid, or SwiftUI silently drops the duplicates:
+        // blanks use negative ids, days use 1...count.
+        return VStack(spacing: Spacing.xs) {
+            LazyVGrid(columns: columns, spacing: Spacing.xs) {
+                ForEach(Array(weekdays.enumerated()), id: \.offset) { _, symbol in
+                    Text(symbol).font(Typeface.caption).foregroundStyle(Palette.tertiary).accessibilityHidden(true)
+                }
             }
-            ForEach(0..<leading, id: \.self) { _ in Color.clear.frame(height: Metrics.tapTarget) }
-            ForEach(1...count, id: \.self) { day in
-                dayCell(LogDate(year: month.year, month: month.month, day: day))
+            LazyVGrid(columns: columns, spacing: Spacing.xs) {
+                ForEach(-leading..<0, id: \.self) { _ in Color.clear.frame(height: Metrics.tapTarget) }
+                ForEach(1...count, id: \.self) { day in
+                    dayCell(LogDate(year: month.year, month: month.month, day: day))
+                }
             }
         }
     }
@@ -202,3 +208,4 @@ struct DayPickerSheet: View {
         return LogDate(year: date.year, month: date.month, day: count)
     }
 }
+

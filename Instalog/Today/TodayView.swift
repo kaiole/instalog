@@ -6,6 +6,8 @@ struct TodayView: View {
     let model: DiaryModel
     @Binding var sheet: ActiveSheet?
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// While the keyboard is up the summary steps aside, so the meal being edited stays in view.
+    @State private var keyboardVisible = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,15 +35,26 @@ struct TodayView: View {
         }
         .background(Palette.background.ignoresSafeArea())
         .foregroundStyle(Palette.text)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            // A hardware keyboard only shows the Done bar; only collapse for the on-screen keyboard.
+            let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+            withAnimation(.snappy) { keyboardVisible = (frame?.height ?? 0) > 120 }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.snappy) { keyboardVisible = false }
+        }
     }
 
     private var top: some View {
         VStack(spacing: 0) {
             header
-            if !model.isViewingToday { pastDayBanner }
-            SummaryHeader(model: model, openDetails: { sheet = .nutrients })
-                .padding(.horizontal, Spacing.l)
-                .padding(.top, 6)
+            if !keyboardVisible || typeSize.isAccessibilitySize {
+                if !model.isViewingToday { pastDayBanner }
+                SummaryHeader(model: model, openDetails: { sheet = .nutrients })
+                    .padding(.horizontal, Spacing.l)
+                    .padding(.top, 6)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 
@@ -52,7 +65,7 @@ struct TodayView: View {
                     Text(Format.dayHeading(model.viewedDate, today: model.today))
                         .font(Typeface.title2)
                         .tracking(-0.4)
-                    Text(Format.dayStamp(model.viewedDate))
+                    Text(Format.dayStamp(model.viewedDate, today: model.today))
                         .font(Typeface.numFootnote)
                         .foregroundStyle(Palette.secondary)
                         .lineLimit(1)
@@ -147,6 +160,8 @@ struct TodayView: View {
     private var logButton: some View {
         let energy = NumberFormatting.energy(model.draftNutrition[.energy].known)
         return Button {
+            // Drop focus first so no field is left editing a draft that's about to reset.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             Task {
                 if await model.logSelectedMeal() {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -197,7 +212,7 @@ struct TodayView: View {
                     UIAccessibility.post(notification: .announcement, argument: toast.message)
                     // VoiceOver users get as long as they need; the toast stays until dismissed.
                     guard !UIAccessibility.isVoiceOverRunning else { return }
-                    try? await Task.sleep(for: .seconds(5))
+                    try? await Task.sleep(for: .seconds(6))
                     dismissToast(toast)
                 }
         }

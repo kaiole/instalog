@@ -496,7 +496,7 @@ struct FoodDetailView: View {
                             systemImage: showAll ? "chevron.up" : "chevron.down")
                     }
                     .buttonStyle(TextButtonStyle())
-                    Text("Nutrition \(food.nutrition.basis.label). “\(Format.unknown)” means the source doesn’t report it — not zero.")
+                    Text("Shown for \(NumberFormatting.quantity(quantity)) \(Format.unitName(food.nutrition.label(for: unit, quantity: quantity)))\(unit == .gram ? "" : grams.map { " (\(NumberFormatting.quantity($0)) g)" } ?? ""). The source lists nutrition \(food.nutrition.basis.label). “\(Format.unknown)” means it isn’t reported — not zero.")
                         .font(Typeface.footnote)
                         .foregroundStyle(Palette.secondary)
                         .padding(.horizontal, Spacing.xs)

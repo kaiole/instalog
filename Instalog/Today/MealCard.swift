@@ -136,7 +136,7 @@ struct DraftItemRow: View {
                 .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
             Group {
                 if item.isAdjusted, let template = item.templateQuantity {
-                    Text("\(defaultWord) \(NumberFormatting.quantity(template)) \(item.food.nutrition.label(for: item.unit, quantity: template))")
+                    Text("\(defaultWord) \(NumberFormatting.quantity(template)) \(Format.unitName(item.food.nutrition.label(for: item.unit, quantity: template)))")
                         .foregroundStyle(Palette.accent)
                 } else {
                     Text(Format.energy(energy)).foregroundStyle(Palette.tertiary)
@@ -194,6 +194,8 @@ struct QuantityStepper: View {
             .accessibilityLabel("More \(name)")
         }
         .frame(minHeight: height)
+        // Take the width the parts need, so neighbours shrink instead of the unit overlapping the amount.
+        .fixedSize(horizontal: !fillsWidth, vertical: false)
         .font(.system(.subheadline, weight: .semibold))
         .foregroundStyle(Palette.secondary)
         .buttonStyle(StepperButtonStyle())
@@ -216,7 +218,11 @@ struct QuantityStepper: View {
     private func typed(_ new: String) {
         guard let value = QuantityInput.parse(new) else { return }
         let clamped = QuantityInput.clamp(value, unit: unit)
-        if !QuantityInput.same(clamped, value) { text = QuantityInput.text(clamped) }
+        if !QuantityInput.same(clamped, value) {
+            // Over the maximum: show the cap and tap the user's hand so it isn't silent.
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            text = QuantityInput.text(clamped)
+        }
         if !QuantityInput.same(clamped, quantity) { setQuantity(clamped) }
     }
 
@@ -279,10 +285,7 @@ struct QuantityStepper: View {
         }
     }
 
-    private func shortUnit(_ label: String) -> String {
-        let first = label.split(separator: ",").first.map(String.init) ?? label
-        return first.count > 10 ? String(first.prefix(9)) + "…" : first
-    }
+    private func shortUnit(_ label: String) -> String { Format.unitName(label) }
 }
 
 /// −/+ buttons inside the stepper: secondary when enabled, dimmed when at a limit.
