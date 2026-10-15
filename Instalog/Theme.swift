@@ -183,17 +183,19 @@ struct IconButtonStyle: ButtonStyle {
 }
 
 struct PrimaryButtonStyle: ButtonStyle {
+    /// Steps down to control styling while another action on screen is the primary one.
+    var muted = false
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Typeface.headline)
-            .foregroundStyle(Palette.onAccent)
+            .foregroundStyle(muted ? Palette.text : Palette.onAccent)
             .padding(.horizontal, 18)
             .padding(.vertical, 6)
             .frame(minHeight: Metrics.button)
             .frame(maxWidth: .infinity)
-            .background(Palette.accent, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+            .background(muted ? Palette.control : Palette.accent, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
     }
 }
@@ -458,6 +460,9 @@ enum Format {
         if date < today, date >= today.adding(days: -6) {
             return date.startOfDay().formatted(.dateTime.weekday(.wide))
         }
+        if date.year != today.year {
+            return date.startOfDay().formatted(.dateTime.month(.abbreviated).day().year())
+        }
         return date.startOfDay().formatted(.dateTime.month(.abbreviated).day())
     }
 
@@ -558,8 +563,17 @@ struct EmptyStateView: View {
     }
 }
 
+/// Offset for a trailing swipe that stops at its action button: past the button the row only
+/// stretches a little, so a long swipe never runs the action by itself.
+func trailingSwipeOffset(revealed: Bool, drag: CGFloat, width: CGFloat) -> CGFloat {
+    let raw = (revealed ? -width : 0) + drag
+    if raw >= 0 { return 0 }
+    if raw >= -width { return raw }
+    return -width - min(24, (-raw - width) * 0.2)
+}
+
 /// Trailing swipe for rows outside a List: swipe left to reveal an 88 pt destructive action,
-/// or swipe all the way to run it. VoiceOver gets the same action by name.
+/// then tap it. A swipe alone never runs it. VoiceOver gets the same action by name.
 struct SwipeAction: ViewModifier {
     let title: String
     let systemImage: String
@@ -567,12 +581,11 @@ struct SwipeAction: ViewModifier {
     let action: () -> Void
 
     @State private var revealed = false
-    @GestureState private var drag: CGFloat = 0
+    @State private var drag: CGFloat = 0
     private let width: CGFloat = 88
-    private let full: CGFloat = 200
 
     func body(content: Content) -> some View {
-        let offset = isEnabled ? min(0, max(-full - 20, (revealed ? -width : 0) + drag)) : 0
+        let offset = isEnabled ? trailingSwipeOffset(revealed: revealed, drag: drag, width: width) : 0
         ZStack(alignment: .trailing) {
             if offset < 0 {
                 Button(role: .destructive, action: run) {
@@ -594,17 +607,13 @@ struct SwipeAction: ViewModifier {
                 .animation(.easeOut(duration: 0.2), value: revealed)
         }
         .clipped()
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12)
-                .updating($drag) { value, state, _ in
-                    if abs(value.translation.width) > abs(value.translation.height) { state = value.translation.width }
-                }
-                .onEnded { value in
-                    guard isEnabled, abs(value.translation.width) > abs(value.translation.height) else { return }
-                    let final = (revealed ? -width : 0) + value.translation.width
-                    if final < -full { run() } else { revealed = final < -width / 2 }
-                }
-        )
+        .horizontalSwipe(isEnabled: isEnabled, onChanged: { drag = $0 }) { translation in
+            let final = (revealed ? -width : 0) + translation
+            withAnimation(.easeOut(duration: 0.2)) {
+                drag = 0
+                revealed = final < -width / 2
+            }
+        }
         .accessibilityAction(named: title) { if isEnabled { run() } }
     }
 

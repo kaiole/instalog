@@ -2,7 +2,9 @@ import Foundation
 
 public struct ExportDocument: Codable, Sendable {
     public static let formatName = "instalog-personal-data"
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
+    /// Versions this app can import. Version 1 predates meal schedules.
+    public static let readableSchemaVersions = 1...2
 
     /// Timestamps are encoded as exact numbers so a round trip is lossless.
     public static let timestampEncoding = "seconds since 2001-01-01T00:00:00Z"
@@ -70,7 +72,7 @@ public enum ExportService {
             throw ImportError.corrupt("not valid JSON")
         }
         guard header.format == ExportDocument.formatName else { throw ImportError.notAnExport }
-        guard let version = header.schemaVersion, version == ExportDocument.currentSchemaVersion else {
+        guard let version = header.schemaVersion, ExportDocument.readableSchemaVersions.contains(version) else {
             throw ImportError.unsupportedVersion(header.schemaVersion ?? 0)
         }
         let decoder = JSONDecoder()
@@ -135,6 +137,16 @@ public enum ExportService {
             guard NutrientRegistry.definition(for: target.nutrientID) != nil else {
                 throw ImportError.invalid("target references unknown nutrient \(target.nutrientID)")
             }
+        }
+        try requireUnique(data.schedules.map(\.id), "schedule")
+        if Set(data.occurrences.map(\.key)).count != data.occurrences.count {
+            throw ImportError.invalid("a scheduled meal is recorded twice on one day")
+        }
+        for schedule in data.schedules {
+            guard mealIDs.contains(schedule.mealTemplateID) else {
+                throw ImportError.invalid("a schedule references unknown meal \(schedule.mealTemplateID)")
+            }
+            guard (try? schedule.validate()) != nil else { throw ImportError.invalid("a schedule has an invalid time or days") }
         }
         let summary = data.preferences.summaryNutrients
         if summary.count > AppPreferences.maxSummaryNutrients

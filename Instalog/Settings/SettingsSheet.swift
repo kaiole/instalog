@@ -27,6 +27,8 @@ struct SettingsSheet: View {
                             link("Order sections and assign meals") { SetupView(model: model, close: nil) }
                             Divider().overlay(Palette.border)
                             link("Saved meals", detail: "\(model.activeMeals.count)") { MealLibraryView(model: model) }
+                            Divider().overlay(Palette.border)
+                            link("Scheduled meals", detail: "\(model.activeSchedules.count)") { SchedulesView(model: model) }
                         }
                         .cardBackground(Palette.raised, radius: 18)
                     }

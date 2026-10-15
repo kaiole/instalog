@@ -115,7 +115,7 @@ public enum DemoRoutine {
         }
 
         let targets = [
-            (NutrientID.energy, 2200.0), (.protein, 150), (.carbohydrate, 240), (.fat, 75),
+            (NutrientID.energy, 2200.0), (.protein, 150), (.carbohydrate, 238), (.fat, 72),
         ].compactMap { id, amount -> NutritionTarget? in
             guard let definition = NutrientRegistry.definition(for: id) else { return nil }
             return NutritionTarget(

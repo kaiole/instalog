@@ -72,7 +72,8 @@ struct ErrorMessageTests {
             LoggingBusyError(), SectionNameError(), TargetValueError(), FoodInUseError(mealNames: ["Oats"]),
             EntryValidationError.noFoods, EntryValidationError.blankName, FoodValidationError.invalidBasis,
             MealValidationError.missingFood, MeasureError.unknownPortion("cup"),
-            SQLiteError(code: 10, message: "disk I/O error"),
+            SQLiteError(code: 10, message: "disk I/O error"), ScheduleValidationError.noDays,
+            ScheduleValidationError.mealUnavailable,
         ]
         for error in errors {
             let text = error.localizedDescription
@@ -156,17 +157,16 @@ struct PolishModelTests {
         await #expect(throws: TargetValueError.self) { try await model.setTarget(.energy, amount: 1e12, kind: .target) }
     }
 
-    @Test("Day navigation never goes past today")
+    @Test("Day navigation goes both ways, into the future without a limit")
     func dayNavigation() async throws {
         let (model, _, _) = try await seeded()
-        #expect(!model.canShowNextDay)
         await model.showAdjacentDay(1)
-        #expect(model.isViewingToday)
-        await model.changeDate(to: model.today.adding(days: 3))
-        #expect(model.isViewingToday)
-        await model.showAdjacentDay(-1)
-        #expect(model.viewedDate == model.today.adding(days: -1))
-        #expect(model.canShowNextDay)
+        #expect(model.viewedDate == model.today.adding(days: 1))
+        #expect(model.isViewingFuture)
+        await model.changeDate(to: model.today.adding(days: 400))
+        #expect(model.viewedDate == model.today.adding(days: 400))
+        await model.changeDate(to: model.today.adding(days: -1))
+        #expect(!model.isViewingFuture)
         await model.showAdjacentDay(1)
         #expect(model.isViewingToday)
     }

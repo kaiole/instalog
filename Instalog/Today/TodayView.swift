@@ -6,8 +6,10 @@ struct TodayView: View {
     let model: DiaryModel
     @Binding var sheet: ActiveSheet?
     @Environment(\.dynamicTypeSize) private var typeSize
-    /// While the keyboard is up the summary steps aside, so the meal being edited stays in view.
+    /// While the keyboard is up the summary shrinks to one line, so the meal being edited stays in view.
     @State private var keyboardVisible = false
+    /// Navigation waiting on a Save / Discard choice for an unsaved entry edit.
+    @State private var pendingLeave: PendingLeave?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +18,7 @@ struct TodayView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         top
-                        SectionCard(model: model, sheet: $sheet, scrollsInternally: false)
+                        SectionCard(model: model, sheet: $sheet, guardEdit: guardEdit, scrollsInternally: false)
                             .padding(.horizontal, Spacing.s)
                             .padding(.top, Spacing.m)
                     }
@@ -24,7 +26,7 @@ struct TodayView: View {
                 .scrollDismissesKeyboard(.interactively)
             } else {
                 top
-                SectionCard(model: model, sheet: $sheet)
+                SectionCard(model: model, sheet: $sheet, guardEdit: guardEdit)
                     .padding(.horizontal, Spacing.s)
                     .padding(.top, Spacing.m)
             }
@@ -43,24 +45,57 @@ struct TodayView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.snappy) { keyboardVisible = false }
         }
+        .confirmationDialog(
+            pendingLeave?.title ?? "", isPresented: Binding(get: { pendingLeave != nil }, set: { if !$0 { pendingLeave = nil } }),
+            titleVisibility: .visible, presenting: pendingLeave
+        ) { pending in
+            Button("Save") {
+                Task {
+                    do {
+                        try await model.saveEntryEdit()
+                        model.endEditing()
+                        pending.action()
+                    } catch {
+                        model.errorMessage = "Couldn’t save changes. \(error.localizedDescription)"
+                    }
+                }
+            }
+            Button("Discard changes", role: .destructive) {
+                model.endEditing()
+                pending.action()
+            }
+            Button("Keep editing", role: .cancel) {}
+        } message: { pending in
+            Text(pending.message)
+        }
+    }
+
+    /// Runs `action` now, or after the user saves or discards an unsaved entry edit.
+    private func guardEdit(_ action: @escaping () -> Void) {
+        guard let edit = model.entryEdit, edit.hasChanges else { return action() }
+        pendingLeave = PendingLeave(edit: edit, action: action)
     }
 
     private var top: some View {
         VStack(spacing: 0) {
             header
             if !keyboardVisible || typeSize.isAccessibilitySize {
-                if !model.isViewingToday { pastDayBanner }
+                if !model.isViewingToday { dayBanner }
                 SummaryHeader(model: model, openDetails: { sheet = .nutrients })
                     .padding(.horizontal, Spacing.l)
                     .padding(.top, 6)
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                CompactSummary(model: model)
+                    .padding(.horizontal, Spacing.l)
+                    .transition(.opacity)
             }
         }
     }
 
     private var header: some View {
         HStack(spacing: Spacing.s) {
-            Button { sheet = .day } label: {
+            Button { guardEdit { sheet = .day } } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.s) {
                     Text(Format.dayHeading(model.viewedDate, today: model.today))
                         .font(Typeface.title2)
@@ -79,12 +114,11 @@ struct TodayView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Choose day. Showing \(Format.dayHeading(model.viewedDate, today: model.today)), \(Format.shortDay(model.viewedDate))")
             HStack(spacing: 2) {
-                Button { Task { await model.showAdjacentDay(-1) } } label: { Image(systemName: "chevron.left") }
+                Button { guardEdit { Task { await model.showAdjacentDay(-1) } } } label: { Image(systemName: "chevron.left") }
                     .buttonStyle(JoinedIconButtonStyle(leading: true))
                     .accessibilityLabel("Previous day")
-                Button { Task { await model.showAdjacentDay(1) } } label: { Image(systemName: "chevron.right") }
+                Button { guardEdit { Task { await model.showAdjacentDay(1) } } } label: { Image(systemName: "chevron.right") }
                     .buttonStyle(JoinedIconButtonStyle(leading: false))
-                    .disabled(!model.canShowNextDay)
                     .accessibilityLabel("Next day")
             }
             Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
@@ -96,22 +130,28 @@ struct TodayView: View {
         .padding(.top, Spacing.s)
     }
 
-    private var pastDayBanner: some View {
-        HStack(spacing: Spacing.s) {
-            Image(systemName: "clock.arrow.circlepath")
+    /// Past days say where logging goes; future days are marked as planned, with a dashed edge
+    /// (dashed means "not real yet" throughout).
+    private var dayBanner: some View {
+        let future = model.isViewingFuture
+        let shape = RoundedRectangle(cornerRadius: Radius.m, style: .continuous)
+        return HStack(spacing: Spacing.s) {
+            Image(systemName: future ? "calendar.badge.clock" : "clock.arrow.circlepath")
                 .foregroundStyle(Palette.accent)
                 .accessibilityHidden(true)
-            Text("Past day · logging goes to \(Format.shortDay(model.viewedDate))")
+            Text(future
+                ? "Planned · \(Format.shortDay(model.viewedDate)) hasn’t happened yet"
+                : "Past day · logging goes to \(Format.shortDay(model.viewedDate))")
                 .font(Typeface.subhead)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Today") { Task { await model.changeDate(to: model.today) } }
+            Button("Today") { guardEdit { Task { await model.changeDate(to: model.today) } } }
                 .buttonStyle(TextButtonStyle())
         }
         .padding(.leading, Spacing.m)
         .padding(.trailing, 2)
         .frame(minHeight: Metrics.tapTarget)
-        .background(Palette.accentSurface, in: RoundedRectangle(cornerRadius: Radius.m, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.m, style: .continuous).stroke(Palette.accentBorder))
+        .background(Palette.accentSurface, in: shape)
+        .overlay(shape.stroke(Palette.accentBorder, style: StrokeStyle(lineWidth: 1, dash: future ? [4, 3] : [])))
         .padding(.horizontal, Spacing.l)
         .padding(.top, Spacing.xs)
         .accessibilityElement(children: .combine)
@@ -159,12 +199,15 @@ struct TodayView: View {
 
     private var logButton: some View {
         let energy = NumberFormatting.energy(model.draftNutrition[.energy].known)
+        let editing = model.entryEdit?.hasChanges == true
         return Button {
             // Drop focus first so no field is left editing a draft that's about to reset.
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            Task {
-                if await model.logSelectedMeal() {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+            guardEdit {
+                Task {
+                    if await model.logSelectedMeal() {
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
                 }
             }
         } label: {
@@ -175,7 +218,7 @@ struct TodayView: View {
                     Spacer(minLength: Spacing.xs)
                     Text(energy)
                         .font(Typeface.mono(15, .semibold, relativeTo: .headline))
-                        .foregroundStyle(Palette.onAccentDim)
+                        .foregroundStyle(editing ? Palette.secondary : Palette.onAccentDim)
                 }
             } else {
                 // A past day is named on the button itself, so it's never logged into by accident.
@@ -183,11 +226,12 @@ struct TodayView: View {
                     Text(logLabel).lineLimit(2)
                     Text("\(Format.shortDay(model.viewedDate)) · \(energy) kcal")
                         .font(Typeface.sans(13, .medium, relativeTo: .subheadline))
-                        .foregroundStyle(Palette.onAccentDim)
+                        .foregroundStyle(editing ? Palette.secondary : Palette.onAccentDim)
                 }
             }
         }
-        .buttonStyle(PrimaryButtonStyle())
+        // While an entry has unsaved changes, its Save is the one lime button on screen.
+        .buttonStyle(PrimaryButtonStyle(muted: editing))
         .disabled(model.isLogging || !model.draftItems.contains { $0.quantity > 0 })
         .accessibilityLabel(
             "\(logLabel)\(model.isViewingToday ? "" : " on \(Format.shortDay(model.viewedDate))"), \(energy) calories")
@@ -205,7 +249,9 @@ struct TodayView: View {
     @ViewBuilder
     private var toast: some View {
         if let toast = model.toast {
-            ToastView(toast: toast, undo: { Task { await model.undo(toast) } }, dismiss: { dismissToast(toast) })
+            ToastView(
+                message: toast.message, undo: toast.undo == nil ? nil : { Task { await model.undo(toast) } },
+                dismiss: { dismissToast(toast) })
                 .padding(.horizontal, Spacing.l)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .task(id: toast.id) {
@@ -245,8 +291,9 @@ private struct JoinedIconButtonStyle: ButtonStyle {
 }
 
 struct ToastView: View {
-    let toast: Toast
-    let undo: () -> Void
+    let message: String
+    /// Shows an Undo button when set.
+    let undo: (() -> Void)?
     let dismiss: () -> Void
 
     var body: some View {
@@ -255,10 +302,10 @@ struct ToastView: View {
                 .font(.system(.body, weight: .bold))
                 .foregroundStyle(Palette.toastAction)
                 .accessibilityHidden(true)
-            Text(toast.message)
+            Text(message)
                 .font(Typeface.sans(15, .medium, relativeTo: .subheadline))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if toast.undo != nil {
+            if let undo {
                 Button(action: undo) {
                     Label("Undo", systemImage: "arrow.uturn.backward")
                         .font(Typeface.sans(15, .semibold, relativeTo: .subheadline))
@@ -289,5 +336,27 @@ struct CompactLabelStyle: LabelStyle {
             configuration.icon
             configuration.title
         }
+    }
+}
+
+/// A navigation held back until an unsaved entry edit is saved or discarded.
+private struct PendingLeave {
+    let title: String
+    let message: String
+    let action: () -> Void
+
+    @MainActor
+    init(edit: EntryEdit, action: @escaping () -> Void) {
+        title = "Save changes to \(edit.draft.name)?"
+        let changed = edit.draft.foods.filter { food in
+            edit.original.foods.first { $0.id == food.id }?.quantity != food.quantity
+        }.count + edit.original.foods.filter { food in !edit.draft.foods.contains { $0.id == food.id } }.count
+        let delta = NutritionCalculator.summarize(edit.draft)[.energy].known
+            - NutritionCalculator.summarize(edit.original)[.energy].known
+        var message = changed == 1 ? "You changed 1 food" : "You changed \(changed) foods"
+        if changed == 0 { message = "You renamed this entry" }
+        if abs(delta) >= 0.5 { message += " · \(SummaryPreview.signed(delta, unit: .kilocalorie)) kcal" }
+        self.message = message
+        self.action = action
     }
 }

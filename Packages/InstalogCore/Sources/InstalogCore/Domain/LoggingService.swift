@@ -9,10 +9,16 @@ public struct LogRequest: Sendable {
     public var path: EntryPath
     /// Extra writes that must commit together with the entry (e.g. saving a one-off as a meal).
     public var additionalOperations: [StoreOperation]
+    /// When the entry counts as recorded; defaults to now. Scheduled meals use their scheduled time.
+    public var recordedAt: Date?
+    public var scheduleOccurrence: OccurrenceKey?
+    /// The new entry's ID, when it must be known before logging.
+    public var entryID: UUID?
 
     public init(
         name: String, mealTemplateID: UUID?, items: [DraftItem], logDate: LogDate, section: RoutineSection?, path: EntryPath,
-        additionalOperations: [StoreOperation] = []
+        additionalOperations: [StoreOperation] = [], recordedAt: Date? = nil, scheduleOccurrence: OccurrenceKey? = nil,
+        entryID: UUID? = nil
     ) {
         self.name = name
         self.mealTemplateID = mealTemplateID
@@ -21,6 +27,9 @@ public struct LogRequest: Sendable {
         self.section = section
         self.path = path
         self.additionalOperations = additionalOperations
+        self.recordedAt = recordedAt
+        self.scheduleOccurrence = scheduleOccurrence
+        self.entryID = entryID
     }
 }
 
@@ -42,9 +51,10 @@ public struct LoggingService: Sendable {
                 food: item.food, quantity: item.quantity, unit: item.unit, templateQuantity: item.templateQuantity)
         }
         let entry = LoggedEntry(
-            logDate: request.logDate, recordedAt: now(), sectionID: request.section?.id,
+            id: request.entryID ?? UUID(), logDate: request.logDate, recordedAt: request.recordedAt ?? now(), sectionID: request.section?.id,
             sectionName: request.section?.name, mealTemplateID: request.mealTemplateID,
-            name: request.name.trimmingCharacters(in: .whitespacesAndNewlines), path: request.path, foods: foods)
+            name: request.name.trimmingCharacters(in: .whitespacesAndNewlines), path: request.path, foods: foods,
+            updatedAt: now(), scheduleOccurrence: request.scheduleOccurrence)
         try entry.validate()
         return entry
     }

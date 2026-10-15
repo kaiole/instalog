@@ -1,23 +1,27 @@
 import InstalogCore
 import SwiftUI
 
-/// Jump to any section. Shows what was logged where; nothing is ever marked done.
+/// The day at a glance: every section with what's logged there and what's scheduled to come.
+/// Tapping a section jumps to it. Nothing is ever marked done.
 struct SectionsSheet: View {
     let model: DiaryModel
     let close: () -> Void
     let editRoutine: () -> Void
 
     var body: some View {
+        let overview = model.dayOverview
         ScrollView {
-            VStack(alignment: .leading, spacing: 6) {
-                SheetHeader(title: "Sections", close: close)
-                Text("Jump anywhere. Sections stay open all day, and nothing gets checked off.")
-                    .font(Typeface.sans(13, relativeTo: .footnote))
-                    .foregroundStyle(Palette.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 8)
-                ForEach(Array(model.destinations.enumerated()), id: \.element.id) { index, destination in
-                    row(index: index, destination: destination)
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                SheetHeader(title: "Sections", subtitle: subtitle(overview), close: close)
+                    .padding(.bottom, Spacing.s)
+                ForEach(Array(overview.enumerated()), id: \.element.id) { index, section in
+                    SectionOverviewCard(
+                        model: model, index: index, section: section,
+                        isCurrent: section.id == model.currentDestination.id
+                    ) {
+                        model.selectDestination(id: section.id)
+                        close()
+                    }
                 }
                 Button(action: editRoutine) {
                     HStack {
@@ -31,7 +35,7 @@ struct SectionsSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Palette.outline))
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 12)
+                .padding(.top, Spacing.xs)
             }
             .padding(.horizontal, 16)
             .padding(.top, 20)
@@ -40,27 +44,78 @@ struct SectionsSheet: View {
         .foregroundStyle(Palette.text)
     }
 
-    private func row(index: Int, destination: Destination) -> some View {
-        let entries = model.entries(in: destination)
-        let energy = NutritionCalculator.summarize(entries: entries)[.energy].known
-        let isCurrent = destination.id == model.currentDestination.id
-        var detail = entries.isEmpty ? "Nothing logged" : "\(entries.count) logged · \(NumberFormatting.energy(energy)) kcal"
-        if let section = destination.section, section.mode == .all { detail += " · shows all meals" }
+    /// "Mon, Oct 5 · 1,680 kcal eaten · tap to jump"
+    private func subtitle(_ overview: [SectionOverview]) -> String {
+        let eaten = overview.reduce(0) { $0 + $1.loggedEnergy }
+        let word = model.isViewingFuture ? "planned" : "eaten"
+        let total = eaten > 0 ? "\(NumberFormatting.energy(eaten)) kcal \(word)" : "nothing \(word) yet"
+        return "\(Format.shortDay(model.viewedDate)) · \(total) · tap to jump"
+    }
+}
 
-        return Button {
-            model.selectDestination(id: destination.id)
-            close()
-        } label: {
-            HStack(spacing: 14) {
-                Text(String(format: "%02d", index + 1))
-                    .font(Typeface.mono(13))
-                    .foregroundStyle(Palette.tertiary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(destination.name)
-                        .font(Typeface.sans(17, .semibold, relativeTo: .headline))
-                    Text(detail).font(Typeface.sans(13, relativeTo: .footnote)).foregroundStyle(Palette.secondary)
+/// One section in the overview: one card, one button.
+private struct SectionOverviewCard: View {
+    let model: DiaryModel
+    let index: Int
+    let section: SectionOverview
+    let isCurrent: Bool
+    let jump: () -> Void
+
+    /// Long sections show their first few entries and a count of the rest.
+    private static let maxRows = 4
+
+    var body: some View {
+        let entries = section.entries
+        let shown = entries.count > Self.maxRows ? Array(entries.prefix(Self.maxRows - 1)) : entries
+        let hidden = entries.dropFirst(shown.count)
+        Button(action: jump) {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                header
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown) { entry in
+                        line(entry.name, energy: NutritionCalculator.summarize(entry)[.energy].known)
+                    }
+                    if !hidden.isEmpty {
+                        line(
+                            "+ \(hidden.count) more",
+                            energy: NutritionCalculator.summarize(entries: Array(hidden))[.energy].known, muted: true)
+                    }
+                    ForEach(section.scheduled) { occurrence in
+                        scheduledLine(occurrence, skipped: false)
+                    }
+                    ForEach(section.skipped) { occurrence in
+                        scheduledLine(occurrence, skipped: true)
+                    }
+                    if entries.isEmpty, section.scheduled.isEmpty, section.skipped.isEmpty {
+                        Text(model.isViewingFuture ? "Nothing planned" : "Nothing logged")
+                            .font(Typeface.footnote)
+                            .foregroundStyle(Palette.tertiary)
+                            .frame(minHeight: 26)
+                    }
                 }
-                Spacer(minLength: 0)
+                .padding(.leading, 34)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, Spacing.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isCurrent ? Palette.badge : Palette.raised, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Goes to this section")
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(String(format: "%02d", index + 1))
+                .font(Typeface.mono(13))
+                .foregroundStyle(Palette.tertiary)
+                .frame(width: 20, alignment: .leading)
+            HStack(spacing: Spacing.s) {
+                Text(section.destination.name)
+                    .font(Typeface.sans(17, .semibold, relativeTo: .headline))
                 if isCurrent {
                     Text("Here now")
                         .font(Typeface.sans(12, .semibold))
@@ -70,19 +125,73 @@ struct SectionsSheet: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.accentBorder))
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(minHeight: 64)
-            .background(isCurrent ? Palette.badge : .clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .contentShape(Rectangle())
+            Spacer(minLength: Spacing.s)
+            VStack(alignment: .trailing, spacing: 2) {
+                (Text(NumberFormatting.energy(section.loggedEnergy))
+                    .font(Typeface.mono(15, .semibold, relativeTo: .body))
+                    .foregroundStyle(section.loggedEnergy > 0 ? Palette.text : Palette.tertiary)
+                    + Text(" kcal").font(Typeface.footnote).foregroundStyle(Palette.tertiary))
+                if section.scheduledEnergy > 0 {
+                    Text("+\(NumberFormatting.energy(section.scheduledEnergy)) sched.")
+                        .font(Typeface.mono(11, relativeTo: .caption2))
+                        .foregroundStyle(Palette.secondary)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(destination.name). \(detail)")
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
+    private func line(_ name: String, energy: Double, muted: Bool = false) -> some View {
+        HStack(spacing: Spacing.s) {
+            Text(name)
+                .font(Typeface.subhead)
+                .foregroundStyle(muted ? Palette.tertiary : Palette.secondary)
+                .lineLimit(1)
+            Spacer(minLength: Spacing.s)
+            Text(NumberFormatting.energy(energy))
+                .font(Typeface.numFootnote)
+                .foregroundStyle(Palette.tertiary)
+        }
+        .frame(minHeight: 26)
+    }
+
+    private func scheduledLine(_ occurrence: ScheduledOccurrence, skipped: Bool) -> some View {
+        let schedule = occurrence.schedule
+        return HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .font(.system(size: 11, weight: .semibold))
+            Text(ScheduleFormat.clock(schedule)).font(Typeface.numFootnote)
+            Text(model.mealName(for: schedule))
+                .font(Typeface.subhead)
+                .strikethrough(skipped)
+                .lineLimit(1)
+            Spacer(minLength: Spacing.s)
+            Text(skipped ? "skipped" : NumberFormatting.energy(model.nutrition(of: schedule)[.energy].known))
+                .font(Typeface.numFootnote)
+        }
+        .foregroundStyle(Palette.tertiary)
+        .frame(minHeight: 26)
+    }
+
+    private var accessibilityText: String {
+        var parts = ["\(section.destination.name)"]
+        if section.entries.isEmpty {
+            parts.append("nothing logged")
+        } else {
+            parts.append("\(section.entries.count) logged, \(NumberFormatting.energy(section.loggedEnergy)) calories")
+            parts.append(section.entries.map(\.name).formatted(.list(type: .and)))
+        }
+        for occurrence in section.scheduled {
+            parts.append("\(model.mealName(for: occurrence.schedule)) scheduled at \(ScheduleFormat.time(occurrence.schedule))")
+        }
+        for occurrence in section.skipped {
+            parts.append("\(model.mealName(for: occurrence.schedule)) skipped")
+        }
+        return parts.joined(separator: ". ")
     }
 }
 
-/// Go to a day: tap a date to open it. Days with entries are dotted; future days can't be chosen.
+/// Go to a day, past or future: tap a date to open it. Logged days get a dot; future days with
+/// entries get a hollow ring, since they're planned rather than eaten.
 struct DayPickerSheet: View {
     let model: DiaryModel
     let close: () -> Void
@@ -94,14 +203,15 @@ struct DayPickerSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                SheetHeader(title: "Go to day", subtitle: "Tap a day to open it", close: close)
-                HStack(spacing: Spacing.s) {
-                    Button("Today") { go(to: model.today) }
-                        .buttonStyle(ChipButtonStyle(isSelected: model.isViewingToday))
-                    Button("Yesterday") { go(to: model.today.adding(days: -1, calendar: calendar)) }
-                        .buttonStyle(ChipButtonStyle(isSelected: model.viewedDate == model.today.adding(days: -1, calendar: calendar)))
+                SheetHeader(title: "Go to day", subtitle: "Tap a day to open it", close: close) {
+                    // Only offered away from today; the arrows on the main screen cover yesterday.
+                    if !model.isViewingToday {
+                        Button("Today") { go(to: model.today) }
+                            .buttonStyle(TodayJumpButtonStyle())
+                            .accessibilityLabel(
+                                "Go to today, \(model.today.startOfDay(in: calendar).formatted(.dateTime.weekday(.wide).month(.wide).day()))")
+                    }
                 }
-                .padding(.top, Spacing.xs)
                 HStack(spacing: Spacing.xs) {
                     Text(month.startOfDay(in: calendar).formatted(.dateTime.month(.wide).year()))
                         .font(Typeface.sans(17, .semibold, relativeTo: .headline))
@@ -113,13 +223,15 @@ struct DayPickerSheet: View {
                         .accessibilityLabel("Previous month")
                     Button { shiftMonth(1) } label: { Image(systemName: "chevron.right") }
                         .buttonStyle(IconButtonStyle())
-                        .disabled(!canShowNextMonth)
                         .accessibilityLabel("Next month")
                 }
                 monthGrid
                 HStack(spacing: 6) {
                     Circle().fill(Palette.accent).frame(width: 4, height: 4)
-                    Text("has entries").font(Typeface.footnote).foregroundStyle(Palette.secondary)
+                    Text("Logged").font(Typeface.footnote).foregroundStyle(Palette.secondary)
+                    Circle().strokeBorder(Palette.accent, lineWidth: 1.25).frame(width: 6, height: 6)
+                        .padding(.leading, Spacing.s)
+                    Text("Planned").font(Typeface.footnote).foregroundStyle(Palette.secondary)
                 }
                 .padding(.horizontal, Spacing.xs)
                 .accessibilityHidden(true)
@@ -168,26 +280,31 @@ struct DayPickerSheet: View {
         return Button { go(to: date) } label: {
             Text("\(date.day)")
                 .font(Typeface.mono(15, isSelected ? .semibold : .regular, relativeTo: .body))
-                .foregroundStyle(isSelected ? Palette.onAccent : isFuture ? Palette.disabled : Palette.text)
+                .foregroundStyle(isSelected ? Palette.onAccent : isFuture ? Palette.secondary : Palette.text)
                 .frame(maxWidth: .infinity, minHeight: Metrics.tapTarget)
                 .background(isSelected ? Palette.accent : .clear, in: shape)
                 .overlay(shape.strokeBorder(isToday && !isSelected ? Palette.accent : .clear, lineWidth: 1.5))
                 .overlay(alignment: .bottom) {
                     if hasEntries {
-                        Circle().fill(isSelected ? Palette.onAccent : Palette.accent).frame(width: 4, height: 4).padding(.bottom, 5)
+                        let color = isSelected ? Palette.onAccent : Palette.accent
+                        Group {
+                            if isFuture {
+                                Circle().strokeBorder(color, lineWidth: 1.25).frame(width: 6, height: 6)
+                            } else {
+                                Circle().fill(color).frame(width: 4, height: 4)
+                            }
+                        }
+                        .padding(.bottom, 4)
                     }
                 }
                 .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .disabled(isFuture)
         .accessibilityLabel(
             date.startOfDay(in: calendar).formatted(date: .complete, time: .omitted)
-                + (isToday ? ", today" : "") + (hasEntries ? ", has entries" : ""))
+                + (isToday ? ", today" : "") + (hasEntries ? (isFuture ? ", has planned entries" : ", has entries") : ""))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
-
-    private var canShowNextMonth: Bool { lastOfMonth(month) < model.today }
 
     private func go(to date: LogDate) {
         Task {
@@ -209,3 +326,16 @@ struct DayPickerSheet: View {
     }
 }
 
+
+/// "Today" beside the sheet's Close: control fill, lime text.
+private struct TodayJumpButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Typeface.calloutStrong)
+            .foregroundStyle(Palette.accent)
+            .padding(.horizontal, 14)
+            .frame(minHeight: Metrics.tapTarget)
+            .background(Palette.control, in: RoundedRectangle(cornerRadius: Radius.m, style: .continuous))
+            .opacity(configuration.isPressed ? 0.7 : 1)
+    }
+}

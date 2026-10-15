@@ -112,24 +112,26 @@ struct StartupErrorView: View {
 /// Every sheet the main screen can present.
 enum ActiveSheet: Identifiable {
     case sections
-    case entry(UUID)
     case addFood(destinationID: String, date: LogDate)
     case settings
     case setup
     case nutrients
     case day
     case newMeal
+    case editMeal(UUID)
+    case schedule(ScheduleEditorTarget)
 
     var id: String {
         switch self {
         case .sections: "sections"
-        case .entry(let id): "entry-\(id)"
         case .addFood(let destination, let date): "add-\(destination)-\(date)"
         case .settings: "settings"
         case .setup: "setup"
         case .nutrients: "nutrients"
         case .day: "day"
         case .newMeal: "newMeal"
+        case .editMeal(let id): "meal-\(id)"
+        case .schedule(let target): "schedule-\(target.id)"
         }
     }
 }
@@ -158,8 +160,20 @@ struct RootView: View {
             } message: {
                 Text(model.errorMessage ?? "")
             }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await model.refreshForCurrentDate(isIdle: sheet == nil) } }
+            // While the app is open, scheduled meals log at their time; on return they catch up.
+            .task(id: scenePhase == .active) {
+                guard scenePhase == .active else { return }
+                await model.tick(isIdle: sheet == nil)
+                await ScheduleNotifier.reconcile(model)
+                while !Task.isCancelled {
+                    let untilNext = model.nextOccurrenceInstant.map { $0.timeIntervalSinceNow + 1 } ?? 60
+                    try? await Task.sleep(for: .seconds(min(60, max(1, untilNext))))
+                    guard !Task.isCancelled else { break }
+                    await model.tick(isIdle: sheet == nil)
+                }
+            }
+            .onChange(of: model.scheduleRevision) {
+                Task { await ScheduleNotifier.reconcile(model) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
                 Task { await model.refreshForCurrentDate(isIdle: sheet == nil) }
@@ -173,15 +187,6 @@ struct RootView: View {
         case .sections:
             SectionsSheet(model: model, close: close, editRoutine: { self.sheet = .setup })
                 .presentationDetents([.medium, .large])
-        case .entry(let id):
-            if let entry = model.entries.first(where: { $0.id == id }) {
-                EntrySheet(model: model, original: entry, close: close)
-                    .presentationDetents([.large])
-            } else {
-                EmptyStateView(
-                    systemImage: "tray", title: "Entry not found",
-                    message: "It may have been deleted or moved to another day.", action: ("Close", close))
-            }
         case .addFood(let destinationID, let date):
             AddFoodSheet(
                 model: model,
@@ -195,9 +200,13 @@ struct RootView: View {
             NutrientsSheet(model: model, close: close, openSettings: { self.sheet = .settings })
         case .day:
             DayPickerSheet(model: model, close: close)
-                .presentationDetents([.height(560), .large])
+                .presentationDetents([.height(520), .large])
         case .newMeal:
             NavigationStack { MealEditorView(model: model, meal: nil, onDone: close) }
+        case .editMeal(let id):
+            NavigationStack { MealEditorView(model: model, meal: model.meal(id: id), onDone: close) }
+        case .schedule(let target):
+            ScheduleEditorView(model: model, target: target, close: close)
         }
     }
 }

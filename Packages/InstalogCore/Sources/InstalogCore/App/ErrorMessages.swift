@@ -15,6 +15,12 @@ extension TargetValueError: LocalizedError {
     public var errorDescription: String? { "Enter an amount of zero or more." }
 }
 
+extension MacroBalanceError: LocalizedError {
+    public var errorDescription: String? {
+        "Your macros add up to \(NumberFormatting.energy(abs(difference))) kcal \(difference > 0 ? "more" : "less") than your calorie target. Change calories or a macro so they match."
+    }
+}
+
 extension FoodInUseError: LocalizedError {
     public var errorDescription: String? {
         let names = mealNames.map { "“\($0)”" }.formatted(.list(type: .and))
@@ -70,4 +76,14 @@ extension MeasureError: LocalizedError {
 
 extension SQLiteError: LocalizedError {
     public var errorDescription: String? { "Your data couldn’t be read or saved (storage error \(code))." }
+}
+
+extension ScheduleValidationError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidTime: "Pick a time of day."
+        case .noDays: "Pick at least one day."
+        case .mealUnavailable: "That saved meal was removed. Pick another one."
+        }
+    }
 }

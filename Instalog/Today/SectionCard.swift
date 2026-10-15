@@ -2,39 +2,96 @@ import InstalogCore
 import SwiftUI
 
 /// The current section: its logged entries first, then the meal chooser and the selected meal.
+/// Moving to another section slides the card in that direction (a cross-fade with Reduce Motion).
 struct SectionCard: View {
     let model: DiaryModel
     @Binding var sheet: ActiveSheet?
+    /// Runs the action, first asking to save or discard any unsaved entry edit.
+    let guardEdit: (@escaping () -> Void) -> Void
     /// False when the whole screen scrolls (accessibility text sizes), so the card doesn't nest a scroll view.
     var scrollsInternally = true
     @State private var loggedExpanded = true
     @State private var revealedEntryID: UUID?
+    /// The index shown before the latest change, so the slide knows which way to go.
+    @State private var shownIndex = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let destinationID = model.currentDestination.id
         VStack(spacing: 0) {
             header
-            if scrollsInternally {
-                ScrollView { content }
-                    .scrollDismissesKeyboard(.interactively)
-            } else {
-                content
+            ZStack {
+                Group {
+                    if scrollsInternally {
+                        ScrollView { content }
+                            .scrollDismissesKeyboard(.interactively)
+                    } else {
+                        content
+                    }
+                }
+                .id(destinationID)
+                .transition(sectionTransition)
             }
+            .frame(maxHeight: scrollsInternally ? .infinity : nil, alignment: .top)
+            .clipped()
         }
+        .animation(sectionAnimation, value: destinationID)
         .padding(Spacing.s)
         .background(Palette.surface, in: RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous).stroke(Palette.border))
-        .onChange(of: model.currentDestination.id) { revealedEntryID = nil }
+        .onAppear { shownIndex = model.currentDestinationIndex }
+        .onChange(of: destinationID) {
+            revealedEntryID = nil
+            shownIndex = model.currentDestinationIndex
+            // An entry open in the section just left closes. Leaving with unsaved changes asks first.
+            if let edit = model.entryEdit, !model.currentEntries.contains(where: { $0.id == edit.original.id }) {
+                model.endEditing()
+            }
+        }
+    }
+
+    private var sectionAnimation: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.3, dampingFraction: 0.86)
+    }
+
+    /// Forward (including auto-advance) rises from the bottom; going back comes from the top.
+    private var sectionTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        let forward = model.currentDestinationIndex >= shownIndex
+        return .push(from: forward ? .bottom : .top)
+    }
+
+    private func browse(by step: Int) {
+        guardEdit { model.browseDestinations(by: step) }
     }
 
     private var content: some View {
                 VStack(spacing: Spacing.m) {
+                    let destination = model.currentDestination
+                    let hasScheduled = !model.pendingOccurrences(in: destination).isEmpty
+                        || !model.skippedOccurrences(in: destination).isEmpty
+                    // Scheduled rows stand in for the empty message: the section isn't empty-looking.
                     LoggedEntriesGroup(
-                        model: model, entries: model.currentEntries, sectionName: model.currentDestination.name,
-                        emptyText: emptyText, isExpanded: $loggedExpanded, revealedEntryID: $revealedEntryID,
-                        open: { sheet = .entry($0.id) })
-                    if model.selectedMeal != nil {
+                        model: model, entries: model.currentEntries, sectionName: destination.name,
+                        emptyText: hasScheduled ? nil : emptyText, isExpanded: $loggedExpanded,
+                        revealedEntryID: $revealedEntryID, guardEdit: guardEdit)
+                    ScheduledRows(model: model, destination: destination) { id in
+                        guardEdit { sheet = .schedule(.edit(id)) }
+                    }
+                    if let meal = model.selectedMeal {
                         MealChooser(model: model)
-                        MealCard(model: model)
+                        MealCard(
+                            model: model,
+                            schedule: {
+                                guardEdit {
+                                    if let existing = model.schedules(for: meal.id).first {
+                                        sheet = .schedule(.edit(existing.id))
+                                    } else {
+                                        sheet = .schedule(.new(mealID: meal.id, sectionID: destination.section?.id))
+                                    }
+                                }
+                            },
+                            editMeal: { guardEdit { sheet = .editMeal(meal.id) } })
                     } else {
                         NoMealsCard(
                             destinationName: model.currentDestination.name,
@@ -48,6 +105,10 @@ struct SectionCard: View {
 
     private var emptyText: String {
         let destination = model.currentDestination
+        if model.isViewingFuture {
+            if !model.hasSections || destination.isUnsectioned { return "Nothing planned for this day yet." }
+            return "Nothing planned for \(destination.name) yet."
+        }
         let day = model.isViewingToday ? "today" : "on this day"
         if !model.hasSections || destination.isUnsectioned { return "Nothing logged \(day) yet." }
         return "Nothing logged in \(destination.name) \(day) yet."
@@ -84,7 +145,7 @@ struct SectionCard: View {
                 }
                 .frame(minHeight: 16)
                 if model.hasSections {
-                    Button { sheet = .sections } label: {
+                    Button { guardEdit { sheet = .sections } } label: {
                         HStack(spacing: 6) {
                             Text(destination.name)
                                 .font(Typeface.title1)
@@ -110,12 +171,12 @@ struct SectionCard: View {
             Spacer(minLength: 0)
             if canBrowse {
                 HStack(spacing: 6) {
-                    Button { withAnimation(.snappy) { model.browseDestinations(by: -1) } } label: {
+                    Button { browse(by: -1) } label: {
                         Image(systemName: "chevron.up")
                     }
                     .buttonStyle(IconButtonStyle())
                     .accessibilityLabel("Previous section: \(destinations[(index - 1 + destinations.count) % destinations.count].name)")
-                    Button { withAnimation(.snappy) { model.browseDestinations(by: 1) } } label: {
+                    Button { browse(by: 1) } label: {
                         Image(systemName: "chevron.down")
                     }
                     .buttonStyle(IconButtonStyle())
@@ -132,7 +193,7 @@ struct SectionCard: View {
                 guard canBrowse, abs(value.translation.height) > 36,
                     abs(value.translation.height) > abs(value.translation.width)
                 else { return }
-                withAnimation(.snappy) { model.browseDestinations(by: value.translation.height < 0 ? 1 : -1) }
+                browse(by: value.translation.height < 0 ? 1 : -1)
             }
         )
     }

@@ -62,10 +62,27 @@ final class RoutineFlowUITests: XCTestCase {
         XCTAssertTrue(summary.waitForExistence(timeout: 5))
         snapshot("05-entries-expanded")
 
-        // Open an entry and delete it, then Undo.
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Greek yogurt bowl, logged'")).firstMatch.tap()
+        // A swipe only reveals Delete; it never deletes by itself.
+        let yogurtRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Greek yogurt bowl, logged'")).firstMatch
+        yogurtRow.swipeLeft(velocity: .fast)
+        snapshot("05b-swipe-revealed")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH '2 logged here'")).firstMatch.exists)
+        yogurtRow.tap()  // closes the revealed button
+
+        // Open the entry inline, change an amount (a preview until saved), then discard.
+        yogurtRow.tap()
+        let menu = app.buttons["More for Greek yogurt bowl"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        let moreYogurt = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'More ' AND NOT label BEGINSWITH 'More for'")).firstMatch
+        moreYogurt.tap()
+        XCTAssertTrue(app.staticTexts["Unsaved changes"].waitForExistence(timeout: 3))
+        snapshot("06-entry-inline-unsaved")
+        app.buttons["Discard"].tap()
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].waitForExistence(timeout: 1))
+
+        // Delete it from the ⋯ menu, then Undo.
+        menu.tap()
         XCTAssertTrue(app.buttons["Delete"].waitForExistence(timeout: 3))
-        snapshot("06-entry-sheet")
         app.buttons["Delete"].tap()
         XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 5))
         app.buttons["Undo"].tap()
@@ -82,6 +99,91 @@ final class RoutineFlowUITests: XCTestCase {
         snapshot("08-sections-sheet")
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Breakfast. 2 logged'")).firstMatch.tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Breakfast, section 1'")).firstMatch.waitForExistence(timeout: 3))
+    }
+
+    func testDiagonalDragScrollsInsteadOfSwiping() {
+        loadDemo()
+        logButton.tap()
+        app.buttons["Greek yogurt bowl"].tap()
+        logButton.tap()
+        let row = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Greek yogurt bowl, logged'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        let menu = app.buttons["More for Greek yogurt bowl"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        let food = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Yogurt, Greek'")).firstMatch
+        XCTAssertTrue(food.exists)
+
+        // A clearly sideways swipe reveals Remove (the row slides left) without removing anything.
+        let resting = food.frame
+        food.swipeLeft()
+        XCTAssertLessThan(food.frame.minX, resting.minX - 40, "Remove is revealed")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists, "Revealing doesn't remove anything")
+        let left = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0)).withOffset(CGVector(dx: 0, dy: food.frame.midY))
+        left.press(forDuration: 0.05, thenDragTo: left.withOffset(CGVector(dx: 160, dy: 0)))
+        snapshot("20a-after-swipe-back")
+        XCTAssertEqual(food.frame.minX, resting.minX, accuracy: 1, "Swiping back hides Remove")
+
+        // A sloppy, mostly vertical drag that starts on a food row scrolls the card instead.
+        let before = food.frame
+        let start = food.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -45, dy: -120)))
+        let after = food.frame
+        XCTAssertLessThan(after.minY, before.minY - 40, "The card scrolled")
+        XCTAssertEqual(after.minX, before.minX, accuracy: 1, "The row didn't start a swipe")
+        snapshot("20-diagonal-scroll")
+    }
+
+    func testPlanningAFutureDay() {
+        loadDemo()
+        app.buttons["Next day"].tap()
+        let banner = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Planned · '")).firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 3))
+        snapshot("06c-future-day")
+        logButton.tap()
+        XCTAssertTrue(app.buttons["Undo"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH '1 logged here'")).firstMatch.waitForExistence(timeout: 5))
+        app.buttons["Previous day"].tap()
+        XCTAssertFalse(banner.waitForExistence(timeout: 2))
+    }
+
+    func testMacroTargetsMustAddUp() {
+        loadDemo()
+        app.buttons["Settings"].tap()
+        app.buttons["Calorie, macro and nutrient targets"].tap()
+        let protein = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Protein,'")).firstMatch
+        XCTAssertTrue(protein.waitForExistence(timeout: 3))
+        protein.tap()
+        let matches = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Your macros add up to'")).firstMatch
+        XCTAssertTrue(matches.waitForExistence(timeout: 3), "Demo targets add up")
+        snapshot("17-macros-match")
+
+        let field = app.textFields["Protein in g"]
+        field.tap()
+        field.typeText("500")
+        let fix = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Set calories to'")).firstMatch
+        XCTAssertTrue(fix.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Save"].isEnabled, "A contradiction can't be saved")
+        snapshot("18-macros-over")
+        fix.tap()
+        XCTAssertTrue(matches.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Save"].isEnabled)
+
+        // With all three macros set, falling short of calories can't be saved either.
+        let fat = app.textFields["Fat in g"]
+        fat.tap()
+        fat.typeText("10")
+        let raise = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Raise fat to'")).firstMatch
+        XCTAssertTrue(raise.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Save"].isEnabled, "Macros short of calories can't be saved")
+        snapshot("18b-macros-under")
+        raise.tap()
+        XCTAssertTrue(matches.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Save"].isEnabled)
+
+        app.buttons["Percent"].tap()
+        XCTAssertTrue(app.staticTexts["100% ✓"].waitForExistence(timeout: 3))
+        snapshot("19-macros-percent")
     }
 
     func testAddFoodSearchAndCustomPortion() {
@@ -122,7 +224,7 @@ final class RoutineFlowUITests: XCTestCase {
         snapshot("15b-section-meals")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS 'Saved meals'")).firstMatch.tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS 'Overnight oats'")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Overnight oats'")).firstMatch.tap()
         let more = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'More '")).firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 3))
         more.tap()
@@ -184,5 +286,32 @@ final class RoutineFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Delete"].waitForExistence(timeout: 3) || fields.count > 1)
         let values = fields.allElementsBoundByIndex.compactMap { $0.value as? String }
         XCTAssertTrue(values.contains("150"), "Logged amounts: \(values)")
+    }
+
+    func testSchedulingAMealAndTheResetButton() {
+        loadDemo()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Options for'")).firstMatch.tap()
+        let schedule = app.buttons["Schedule…"]
+        XCTAssertTrue(schedule.waitForExistence(timeout: 3))
+        schedule.tap()
+        XCTAssertTrue(app.staticTexts["Schedule meal"].waitForExistence(timeout: 3))
+        // Every day, so the schedule exists whichever weekday the test runs on.
+        app.buttons["Saturday"].tap()
+        app.buttons["Sunday"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Every day at'")).firstMatch.exists)
+        snapshot("20-schedule-editor")
+        app.buttons["Save schedule"].tap()
+        XCTAssertTrue(logButton.waitForExistence(timeout: 3))
+
+        app.buttons["Settings"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS 'Scheduled meals'")).firstMatch.tap()
+        XCTAssertTrue(app.buttons["New schedule"].waitForExistence(timeout: 3), "The list shows the new schedule")
+        snapshot("21-scheduled-meals")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["Calorie, macro and nutrient targets"].tap()
+        let reset = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reset all to FDA Daily Values'")).firstMatch
+        XCTAssertTrue(reset.waitForExistence(timeout: 3))
+        snapshot("22-targets-reset")
     }
 }

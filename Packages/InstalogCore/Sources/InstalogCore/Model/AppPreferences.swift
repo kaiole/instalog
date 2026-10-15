@@ -1,5 +1,11 @@
 import Foundation
 
+/// How macro targets are entered. Either way they're stored as grams.
+public enum MacroTargetMode: String, Hashable, Sendable, Codable {
+    case grams
+    case percent
+}
+
 public struct AppPreferences: Hashable, Sendable, Codable {
     public static let maxSummaryNutrients = 3
 
@@ -7,14 +13,31 @@ public struct AppPreferences: Hashable, Sendable, Codable {
     public var summaryNutrients: [NutrientID]
     /// Show FDA reference values for nutrients without a personal target.
     public var showReferenceValues: Bool
+    public var macroTargetMode: MacroTargetMode
 
     public init(
         autoProgression: Bool = false, summaryNutrients: [NutrientID] = [.protein, .carbohydrate, .fat],
-        showReferenceValues: Bool = true
+        showReferenceValues: Bool = true, macroTargetMode: MacroTargetMode = .grams
     ) {
         self.autoProgression = autoProgression
         self.summaryNutrients = summaryNutrients
         self.showReferenceValues = showReferenceValues
+        self.macroTargetMode = macroTargetMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case autoProgression, summaryNutrients, showReferenceValues, macroTargetMode
+    }
+
+    /// Fields added after the first release default when missing, so older data still opens.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppPreferences()
+        autoProgression = try container.decode(Bool.self, forKey: .autoProgression)
+        summaryNutrients = try container.decode([NutrientID].self, forKey: .summaryNutrients)
+        showReferenceValues = try container.decode(Bool.self, forKey: .showReferenceValues)
+        macroTargetMode = try container.decodeIfPresent(MacroTargetMode.self, forKey: .macroTargetMode)
+            ?? defaults.macroTargetMode
     }
 }
 

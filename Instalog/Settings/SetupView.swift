@@ -36,7 +36,7 @@ struct SetupView: View {
                     .listRowBackground(Palette.raised)
                     .accessibilityAction(named: "Move up") { move(index, by: -1) }
                     .accessibilityAction(named: "Move down") { move(index, by: 1) }
-                    .swipeActions {
+                    .swipeActions(allowsFullSwipe: false) {
                         Button("Remove", role: .destructive) { removing = section }
                     }
                 }

@@ -4,10 +4,13 @@ import SwiftUI
 /// The selected saved meal as a draft. Quantity edits apply to this log only.
 struct MealCard: View {
     let model: DiaryModel
+    var schedule: () -> Void = {}
+    var editMeal: () -> Void = {}
 
     var body: some View {
         let nutrition = model.draftNutrition
         let items = model.draftItems
+        let scheduled = model.selectedMeal.map { model.schedules(for: $0.id) } ?? []
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: Spacing.m) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -22,6 +25,15 @@ struct MealCard: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: Radius.s, style: .continuous)
                                 .strokeBorder(Palette.handle, style: StrokeStyle(lineWidth: 1, dash: [3, 2])))
+                    if let first = scheduled.first {
+                        Label(
+                            scheduled.count > 1
+                                ? "Scheduled \(scheduled.count) times"
+                                : "Scheduled · \(ScheduleFormat.summary(first.recurrence, minuteOfDay: first.minuteOfDay))",
+                            systemImage: "clock")
+                            .font(Typeface.footnote)
+                            .foregroundStyle(Palette.tertiary)
+                    }
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: Spacing.xs) {
@@ -29,7 +41,23 @@ struct MealCard: View {
                         .font(Typeface.numLarge)
                     Text("kcal").font(Typeface.footnote).foregroundStyle(Palette.tertiary)
                 }
-                .padding(.trailing, Spacing.xs)
+                Menu {
+                    Button(action: schedule) {
+                        if let first = scheduled.first {
+                            Label("Edit schedule · \(ScheduleFormat.time(first))", systemImage: "clock")
+                        } else {
+                            Label("Schedule…", systemImage: "clock.badge.plus")
+                        }
+                    }
+                    Button(action: editMeal) { Label("Edit saved meal", systemImage: "pencil") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(.body, weight: .semibold))
+                        .foregroundStyle(Palette.secondary)
+                        .frame(width: Metrics.tapTarget, height: Metrics.tapTarget)
+                        .background(Palette.control, in: RoundedRectangle(cornerRadius: Radius.m, style: .continuous))
+                }
+                .accessibilityLabel("Options for \(model.selectedMeal?.name ?? "this meal")")
             }
             MacroLine(nutrition: nutrition).padding(.top, Spacing.m).padding(.bottom, 10)
             VStack(spacing: 0) {
@@ -59,13 +87,10 @@ struct MealCard: View {
         .padding(.bottom, Spacing.xs)
         .cardBackground()
         .contentShape(Rectangle())
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 24).onEnded { value in
-                let dx = value.translation.width
-                guard abs(dx) > 50, abs(dx) > abs(value.translation.height) * 1.5 else { return }
-                withAnimation(.snappy) { model.browseMeals(by: dx < 0 ? 1 : -1) }
-            }
-        )
+        .horizontalSwipe { dx in
+            guard abs(dx) > 50 else { return }
+            withAnimation(.snappy) { model.browseMeals(by: dx < 0 ? 1 : -1) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Next meal") { model.browseMeals(by: 1) }
         .accessibilityAction(named: "Previous meal") { model.browseMeals(by: -1) }
@@ -104,6 +129,8 @@ struct DraftItemRow: View {
     var units: [MeasureUnit] = []
     var setUnit: ((MeasureUnit) -> Void)?
     var showsDivider = true
+    /// "120 kcal · was 200 g" rather than just the default, for edits of a logged entry.
+    var showsEnergyWhenAdjusted = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -136,8 +163,12 @@ struct DraftItemRow: View {
                 .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
             Group {
                 if item.isAdjusted, let template = item.templateQuantity {
-                    Text("\(defaultWord) \(NumberFormatting.quantity(template)) \(Format.unitName(item.food.nutrition.label(for: item.unit, quantity: template)))")
-                        .foregroundStyle(Palette.accent)
+                    let previous = "\(defaultWord) \(NumberFormatting.quantity(template)) \(Format.unitName(item.food.nutrition.label(for: item.unit, quantity: template)))"
+                    if showsEnergyWhenAdjusted {
+                        Text("\(Format.energy(energy)) · \(previous)").foregroundStyle(Palette.secondary)
+                    } else {
+                        Text(previous).foregroundStyle(Palette.accent)
+                    }
                 } else {
                     Text(Format.energy(energy)).foregroundStyle(Palette.tertiary)
                 }

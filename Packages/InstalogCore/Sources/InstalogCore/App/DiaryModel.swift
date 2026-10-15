@@ -24,6 +24,7 @@ public struct Toast: Identifiable, Sendable {
     public enum Undo: Sendable {
         case removeLogged(LoggedEntry, previousDestinationID: String, previousDraft: [UUID: Double]?, draftKey: String)
         case restoreDeleted(LoggedEntry)
+        case unskip(OccurrenceKey)
     }
 
     public let id = UUID()
@@ -36,6 +37,19 @@ public struct Toast: Identifiable, Sendable {
     }
 }
 
+/// A logged entry being edited inline: what's saved, and the unsaved preview.
+public struct EntryEdit: Equatable, Sendable {
+    public var original: LoggedEntry
+    public var draft: LoggedEntry
+
+    public init(original: LoggedEntry) {
+        self.original = original
+        draft = original
+    }
+
+    public var hasChanges: Bool { draft.foods != original.foods || draft.name != original.name }
+}
+
 /// A food the user logged recently, with the amount they used last time.
 public struct RecentFood: Identifiable, Hashable, Sendable {
     public var food: FoodDefinition
@@ -44,6 +58,28 @@ public struct RecentFood: Identifiable, Hashable, Sendable {
     public var loggedOn: LogDate
 
     public var id: UUID { food.id }
+}
+
+/// What a micronutrient reset replaced, so it can be undone.
+public struct TargetReset: Sendable {
+    public var nutrients: [NutrientID]
+    /// The records in effect before the reset, for the nutrients it changed.
+    public var previous: [NutritionTarget]
+    public var previousShowReferences: Bool
+
+    public var count: Int { nutrients.count }
+}
+
+/// One section of the day overview: what's logged there and what's scheduled to come.
+public struct SectionOverview: Identifiable, Sendable {
+    public var destination: Destination
+    public var entries: [LoggedEntry]
+    public var scheduled: [ScheduledOccurrence]
+    public var skipped: [ScheduledOccurrence]
+    public var loggedEnergy: Double
+    public var scheduledEnergy: Double
+
+    public var id: String { destination.id }
 }
 
 public struct FoodSearchOutcome: Sendable {
@@ -72,6 +108,7 @@ public final class DiaryModel {
     public private(set) var sections: [RoutineSection] = []
     public private(set) var targets: [NutritionTarget] = []
     public private(set) var preferences = AppPreferences()
+    public private(set) var schedules: [MealSchedule] = []
 
     public private(set) var today: LogDate
     public private(set) var viewedDate: LogDate
@@ -89,6 +126,17 @@ public final class DiaryModel {
     private var navigationByDate: [LogDate: (destinationID: String, selections: [String: UUID])] = [:]
     private var draftQuantities: [String: [UUID: Double]] = [:]
 
+    /// The logged entry being edited inline, if any. Changes stay a preview until saved.
+    public private(set) var entryEdit: EntryEdit?
+
+    /// What happened to scheduled occurrences on the viewed day that were already logged or skipped.
+    private var outcomesOnViewedDate: [OccurrenceKey: OccurrenceOutcome] = [:]
+    /// The time upcoming scheduled meals are judged against; advanced by `tick()`.
+    public private(set) var lastTick: Date
+    /// Changes whenever schedules or their occurrences change, so notifications can be refreshed.
+    public private(set) var scheduleRevision = 0
+    private var isMaterializing = false
+
     public init(
         store: any PersonalStore, catalog: (any FoodCatalog)?, calendar: Calendar = .current,
         clock: @escaping @Sendable () -> Date = { Date() }
@@ -101,6 +149,7 @@ public final class DiaryModel {
         let start = LogDate(clock(), calendar: calendar)
         today = start
         viewedDate = start
+        lastTick = clock()
     }
 
     // MARK: Loading
@@ -109,9 +158,12 @@ public final class DiaryModel {
         do {
             let configuration = try await store.loadConfiguration()
             apply(configuration)
+            entryEdit = nil
             today = LogDate(clock(), calendar: calendar)
             viewedDate = today
             entries = try await store.entries(on: today)
+            outcomesOnViewedDate = try await occurrenceOutcomes(on: today)
+            lastTick = clock()
             restoreNavigation(configuration.navigation)
             isLoaded = true
             loadError = nil
@@ -126,6 +178,7 @@ public final class DiaryModel {
         sections = configuration.sections.sorted { $0.sortOrder < $1.sortOrder }
         targets = configuration.targets
         preferences = configuration.preferences
+        schedules = configuration.schedules
     }
 
     private func restoreNavigation(_ memory: NavigationMemory?) {
@@ -155,6 +208,8 @@ public final class DiaryModel {
     public var activeMeals: [MealTemplate] { meals.filter { !$0.isArchived } }
     public var hasSections: Bool { !activeSections.isEmpty }
     public var isViewingToday: Bool { viewedDate == today }
+    /// A day that hasn't happened yet. Logging there plans ahead.
+    public var isViewingFuture: Bool { viewedDate > today }
 
     /// Entries for the viewed day that don't belong to an active section.
     public var unsectionedEntries: [LoggedEntry] {
@@ -227,6 +282,12 @@ public final class DiaryModel {
     }
 
     public var dayNutrition: NutritionSummary { NutritionCalculator.summarize(entries: entries) }
+
+    /// The day's totals as they'd be if the entry being edited were saved; nil without unsaved edits.
+    public var entryEditDayNutrition: NutritionSummary? {
+        guard let edit = entryEdit, edit.hasChanges else { return nil }
+        return NutritionCalculator.summarize(entries: entries.map { $0.id == edit.draft.id ? edit.draft : $0 })
+    }
 
     /// Targets in effect on the viewed day, for totals and progress.
     public var effectiveTargets: [NutrientID: EffectiveTarget] { effectiveTargets(on: viewedDate) }
@@ -403,10 +464,11 @@ public final class DiaryModel {
 
     /// Moves an entry to another destination without changing its foods, nutrition or time.
     public func moveEntry(_ entry: LoggedEntry, to destination: Destination) async throws {
-        var moved = entry
+        var moved = entries.first { $0.id == entry.id } ?? entry
         moved.assign(to: destination)
         let saved = try await logging.update(moved)
         replaceLocally(saved)
+        if entryEdit?.original.id == saved.id { entryEdit = nil }
         toast = Toast(message: "Moved \(entry.name) to \(destination.name)", undo: nil)
     }
 
@@ -414,6 +476,7 @@ public final class DiaryModel {
         do {
             try await logging.delete(entry)
             entries.removeAll { $0.id == entry.id }
+            if entryEdit?.original.id == entry.id { entryEdit = nil }
             toast = Toast(
                 message: "Deleted \(entry.name) from \(destinationName(for: entry))", undo: .restoreDeleted(entry))
         } catch {
@@ -427,7 +490,11 @@ public final class DiaryModel {
         do {
             switch undo {
             case .removeLogged(let entry, let previousDestinationID, let previousDraft, let key):
-                try await logging.delete(entry)
+                if let occurrence = entry.scheduleOccurrence {
+                    try await removeScheduledLog(entry, occurrence: occurrence)
+                } else {
+                    try await logging.delete(entry)
+                }
                 entries.removeAll { $0.id == entry.id }
                 if entry.logDate == viewedDate, destinations.contains(where: { $0.id == previousDestinationID }) {
                     destinationID = previousDestinationID
@@ -437,9 +504,66 @@ public final class DiaryModel {
             case .restoreDeleted(let entry):
                 try await logging.restore(entry)
                 insertLocally(entry)
+            case .unskip(let key):
+                try await unskip(key)
             }
         } catch {
             errorMessage = "Couldn’t undo. \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Editing a logged entry inline
+
+    /// Starts editing a logged entry, dropping any other entry's unsaved changes.
+    public func beginEditing(_ entry: LoggedEntry) {
+        guard entryEdit?.original.id != entry.id else { return }
+        entryEdit = EntryEdit(original: entry)
+    }
+
+    /// Stops editing. Unsaved changes are dropped.
+    public func endEditing() {
+        entryEdit = nil
+    }
+
+    public func setEditQuantity(_ quantity: Double, for foodID: UUID) {
+        guard quantity.isFinite, let index = entryEdit?.draft.foods.firstIndex(where: { $0.id == foodID }),
+            let unit = entryEdit?.draft.foods[index].unit
+        else { return }
+        entryEdit?.draft.foods[index].quantity = QuantityInput.clamp(quantity, unit: unit)
+    }
+
+    /// Removes a food from the edit. The last food stays; delete the entry instead.
+    public func removeEditFood(_ foodID: UUID) {
+        guard let edit = entryEdit, edit.draft.foods.count > 1 else { return }
+        entryEdit?.draft.foods.removeAll { $0.id == foodID }
+    }
+
+    /// Puts the edit back to what's saved.
+    public func discardEntryEdit() {
+        guard let edit = entryEdit else { return }
+        entryEdit = EntryEdit(original: edit.original)
+    }
+
+    /// Saves the edit. The entry stays open, now matching what's saved.
+    public func saveEntryEdit() async throws {
+        guard let edit = entryEdit, edit.hasChanges else { return }
+        try await updateEntry(edit.draft)
+        if let saved = entries.first(where: { $0.id == edit.draft.id }) {
+            entryEdit = EntryEdit(original: saved)
+        }
+    }
+
+    /// Renames a logged entry right away, keeping any unsaved amount changes in the edit.
+    public func renameEntry(_ entry: LoggedEntry, to name: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != entry.name else { return }
+        var renamed = entries.first { $0.id == entry.id } ?? entry
+        renamed.name = trimmed
+        let saved = try await logging.update(renamed)
+        replaceLocally(saved)
+        if entryEdit?.original.id == saved.id {
+            entryEdit?.original = saved
+            entryEdit?.draft.name = saved.name
         }
     }
 
@@ -463,23 +587,24 @@ public final class DiaryModel {
 
     // MARK: Dates
 
-    public var canShowNextDay: Bool { viewedDate < today }
-
     /// Days between `first` and `last` (inclusive) that have entries, for marking a calendar.
     /// Empty when the store can't be read; the marks are a convenience, not data.
     public func daysWithEntries(from first: LogDate, through last: LogDate) async -> Set<LogDate> {
         (try? await store.datesWithEntries(from: first, through: last)) ?? []
     }
 
-    /// Shows the day before (-1) or after (+1) the viewed one. Never moves past today.
+    /// Shows the day before (-1) or after (+1) the viewed one.
     public func showAdjacentDay(_ step: Int) async {
         await changeDate(to: viewedDate.adding(days: step, calendar: calendar))
     }
 
+    /// Opens any day, past or future. Future days are for planning; their entries are ordinary.
     public func changeDate(to date: LogDate) async {
-        guard date != viewedDate, date <= today else { return }
+        guard date != viewedDate else { return }
         do {
             let loaded = try await store.entries(on: date)
+            outcomesOnViewedDate = try await occurrenceOutcomes(on: date)
+            entryEdit = nil
             navigationByDate[viewedDate] = (currentDestination.id, mealSelections)
             viewedDate = date
             entries = loaded
@@ -496,9 +621,11 @@ public final class DiaryModel {
         guard now != today else { return }
         let wasViewingToday = isViewingToday
         today = now
-        guard wasViewingToday, isIdle, !hasUnsavedDraftEdits else { return }
+        guard wasViewingToday, isIdle, !hasUnsavedDraftEdits, entryEdit?.hasChanges != true else { return }
         do {
             entries = try await store.entries(on: now)
+            outcomesOnViewedDate = try await occurrenceOutcomes(on: now)
+            entryEdit = nil
             viewedDate = now
             draftQuantities = [:]
             showNavigation(for: now)
@@ -633,6 +760,7 @@ public final class DiaryModel {
     /// Removes a meal from future selection and every section; logged instances are untouched.
     public func archiveMeal(id: UUID) async throws {
         guard var meal = meals.first(where: { $0.id == id }) else { return }
+        await materializeDueOccurrences()
         meal.archivedAt = clock()
         var changedSections: [RoutineSection] = []
         for var section in sections where section.mealIDs.contains(id) {
@@ -640,9 +768,12 @@ public final class DiaryModel {
             section.updatedAt = clock()
             changedSections.append(section)
         }
-        try await store.apply([.putMeal(meal)] + changedSections.map(StoreOperation.putSection))
+        let stopped = archivedSchedules { $0.mealTemplateID == id }
+        try await store.apply(
+            [.putMeal(meal)] + changedSections.map(StoreOperation.putSection) + stopped.map(StoreOperation.putSchedule))
         meals = meals.map { $0.id == id ? meal : $0 }
         replaceSections(changedSections)
+        replaceSchedules(stopped)
         draftQuantities = draftQuantities.filter { !$0.key.hasSuffix(id.uuidString) }
     }
 
@@ -688,10 +819,13 @@ public final class DiaryModel {
     /// Archives a section. Its entries keep their section ID and name snapshot.
     public func removeSection(id: UUID) async throws {
         guard var section = sections.first(where: { $0.id == id }) else { return }
+        await materializeDueOccurrences()
         let wasCurrent = currentDestination.section?.id == id
         section.archivedAt = clock()
         section.updatedAt = clock()
-        try await saveSections([section])
+        let stopped = archivedSchedules { $0.sectionID == id }
+        try await saveSections([section], with: stopped.map(StoreOperation.putSchedule))
+        replaceSchedules(stopped)
         if wasCurrent { destinationID = destinations.first?.id ?? SectionKey.unsectioned }
     }
 
@@ -703,8 +837,8 @@ public final class DiaryModel {
         try await saveSections([section])
     }
 
-    private func saveSections(_ changed: [RoutineSection]) async throws {
-        try await store.apply(changed.map(StoreOperation.putSection))
+    private func saveSections(_ changed: [RoutineSection], with extra: [StoreOperation] = []) async throws {
+        try await store.apply(changed.map(StoreOperation.putSection) + extra)
         replaceSections(changed)
         persistNavigation()
     }
@@ -763,6 +897,47 @@ public final class DiaryModel {
             source: .user)
     }
 
+    /// The calorie and macro targets in effect on a day, for checking that they add up.
+    public func macroBalance(on date: LogDate? = nil) -> MacroBalance {
+        MacroBalance(targets: effectiveTargets(on: date ?? today))
+    }
+
+    /// Saves calories and macros together from today onward. A nil value turns that target off.
+    /// Refuses targets that don't add up (see `MacroBalance.isConsistent`).
+    public func setMacroTargets(_ balance: MacroBalance) async throws {
+        guard balance.isConsistent else { throw MacroBalanceError(difference: balance.macroKcal - (balance.energy ?? 0)) }
+        let current = effectiveTargets(on: today)
+        var records: [NutritionTarget] = []
+        for id in [NutrientID.energy] + MacroBalance.macros {
+            guard let definition = NutrientRegistry.definition(for: id) else { continue }
+            let existing = current[id]
+            if let amount = balance[id] {
+                guard amount.isFinite, amount >= 0, amount <= NutritionTarget.maximumAmount else { throw TargetValueError() }
+                if let existing, existing.amount == amount { continue }
+                let kind = existing.map { $0.kind == .limit ? TargetKind.limit : .target } ?? .target
+                records.append(targetRecord(
+                    id, kind: kind, amount: amount, unit: definition.unit, form: definition.form, enabled: true,
+                    source: .user))
+            } else if let existing {
+                records.append(targetRecord(
+                    id, kind: existing.kind, amount: existing.amount, unit: definition.unit, form: definition.form,
+                    enabled: false, source: .user))
+            }
+        }
+        guard !records.isEmpty else { return }
+        try await store.apply(records.map(StoreOperation.putTarget))
+        for record in records {
+            targets.removeAll { $0.id == record.id }
+            targets.append(record)
+        }
+    }
+
+    public func setMacroTargetMode(_ mode: MacroTargetMode) async throws {
+        var updated = preferences
+        updated.macroTargetMode = mode
+        try await savePreferences(updated)
+    }
+
     /// Hides any target or reference for the nutrient from today onward.
     public func disableTarget(_ nutrient: NutrientID) async throws {
         guard let definition = NutrientRegistry.definition(for: nutrient) else { return }
@@ -784,15 +959,391 @@ public final class DiaryModel {
         _ nutrient: NutrientID, kind: TargetKind, amount: Double, unit: NutrientUnit, form: String?, enabled: Bool,
         source: TargetSource
     ) async throws {
-        let hasHistory = targets.contains { $0.nutrientID == nutrient }
-        let effective = hasHistory ? today : .beginning
-        let sameDay = targets.first { $0.nutrientID == nutrient && $0.effectiveDate == effective }
-        let target = NutritionTarget(
-            id: sameDay?.id ?? UUID(), nutrientID: nutrient, kind: kind, amount: amount, unit: unit, form: form,
-            effectiveDate: effective, enabled: enabled, source: source)
+        let target = targetRecord(
+            nutrient, kind: kind, amount: amount, unit: unit, form: form, enabled: enabled, source: source)
         try await store.apply([.putTarget(target)])
         targets.removeAll { $0.id == target.id }
         targets.append(target)
+    }
+
+    /// A target record effective from today, replacing one already made today.
+    private func targetRecord(
+        _ nutrient: NutrientID, kind: TargetKind, amount: Double, unit: NutrientUnit, form: String?, enabled: Bool,
+        source: TargetSource
+    ) -> NutritionTarget {
+        let hasHistory = targets.contains { $0.nutrientID == nutrient }
+        let effective = hasHistory ? today : .beginning
+        let sameDay = targets.first { $0.nutrientID == nutrient && $0.effectiveDate == effective }
+        return NutritionTarget(
+            id: sameDay?.id ?? UUID(), nutrientID: nutrient, kind: kind, amount: amount, unit: unit, form: form,
+            effectiveDate: effective, enabled: enabled, source: source)
+    }
+
+    // MARK: Resetting micronutrient targets
+
+    /// Nutrients with an FDA Daily Value whose target in effect today differs from it. Calories,
+    /// macros and nutrients without a Daily Value (such as a caffeine limit) are never included.
+    public var customMicronutrientTargets: [NutrientID] {
+        Set(targets.map(\.nutrientID)).filter { id in
+            guard let definition = NutrientRegistry.definition(for: id), definition.group != .energyAndMacros,
+                let reference = FDADailyValues.value(for: id), let record = userTarget(for: id)
+            else { return false }
+            return !record.enabled || record.kind != reference.kind || record.amount != reference.amount
+                || record.unit != reference.unit
+        }
+        .sorted { $0.rawValue < $1.rawValue }
+    }
+
+    /// True when a reset would change anything, including turning FDA values back on.
+    public var canResetMicronutrientTargets: Bool {
+        !customMicronutrientTargets.isEmpty || !preferences.showReferenceValues
+    }
+
+    /// Puts every nutrient that has an FDA Daily Value back to it from today onward, turning any
+    /// that were off back on, and shows FDA values again. Earlier days keep their targets.
+    @discardableResult
+    public func resetMicronutrientTargets() async throws -> TargetReset {
+        let custom = customMicronutrientTargets
+        let reset = TargetReset(
+            nutrients: custom, previous: custom.compactMap { userTarget(for: $0) },
+            previousShowReferences: preferences.showReferenceValues)
+        let records = custom.compactMap { id -> NutritionTarget? in
+            guard let reference = FDADailyValues.value(for: id) else { return nil }
+            return targetRecord(
+                id, kind: reference.kind, amount: reference.amount, unit: reference.unit, form: reference.form,
+                enabled: true, source: .referenceTable(name: FDADailyValues.sourceName, version: FDADailyValues.version))
+        }
+        var updatedPreferences = preferences
+        updatedPreferences.showReferenceValues = true
+        var operations = records.map(StoreOperation.putTarget)
+        if updatedPreferences != preferences { operations.append(.putPreferences(updatedPreferences)) }
+        guard !operations.isEmpty else { return reset }
+        try await store.apply(operations)
+        for record in records {
+            targets.removeAll { $0.id == record.id }
+            targets.append(record)
+        }
+        preferences = updatedPreferences
+        return reset
+    }
+
+    /// Puts back the targets a reset replaced, from today onward.
+    public func undoTargetReset(_ reset: TargetReset) async throws {
+        let records = reset.previous.map { old in
+            targetRecord(
+                old.nutrientID, kind: old.kind, amount: old.amount, unit: old.unit, form: old.form, enabled: old.enabled,
+                source: old.source)
+        }
+        var updatedPreferences = preferences
+        updatedPreferences.showReferenceValues = reset.previousShowReferences
+        var operations = records.map(StoreOperation.putTarget)
+        if updatedPreferences != preferences { operations.append(.putPreferences(updatedPreferences)) }
+        guard !operations.isEmpty else { return }
+        try await store.apply(operations)
+        for record in records {
+            targets.removeAll { $0.id == record.id }
+            targets.append(record)
+        }
+        preferences = updatedPreferences
+    }
+
+    // MARK: Scheduled meals
+
+    public var activeSchedules: [MealSchedule] { schedules.filter { !$0.isArchived } }
+
+    /// Scheduled meals still to come on the viewed day. They're never counted in the day's totals.
+    public var pendingOccurrences: [ScheduledOccurrence] {
+        ScheduleEngine.pending(
+            on: viewedDate, activeSchedules, handled: Set(outcomesOnViewedDate.keys), now: lastTick, calendar: calendar)
+    }
+
+    /// Scheduled meals skipped on the viewed day. They stay visible so they can be brought back.
+    public var skippedOccurrences: [ScheduledOccurrence] {
+        ScheduleEngine.occurrences(of: activeSchedules, from: viewedDate, through: viewedDate, calendar: calendar)
+            .filter { outcomesOnViewedDate[$0.key] == .skipped }
+    }
+
+    public func skippedOccurrences(in destination: Destination) -> [ScheduledOccurrence] {
+        skippedOccurrences.filter { destinationID(for: $0.schedule) == destination.id }
+    }
+
+    public func pendingOccurrences(in destination: Destination) -> [ScheduledOccurrence] {
+        pendingOccurrences.filter { destinationID(for: $0.schedule) == destination.id }
+    }
+
+    /// What the viewed day's upcoming scheduled meals add up to.
+    public var scheduledNutrition: NutritionSummary {
+        summarize(pendingOccurrences.flatMap { items(for: $0.schedule) })
+    }
+
+    /// The viewed day, section by section, with logged entries and upcoming scheduled meals.
+    public var dayOverview: [SectionOverview] {
+        let pending = pendingOccurrences
+        let skipped = skippedOccurrences
+        return destinations.map { destination in
+            let logged = entries(in: destination)
+            let scheduled = pending.filter { destinationID(for: $0.schedule) == destination.id }
+            return SectionOverview(
+                destination: destination, entries: logged, scheduled: scheduled,
+                skipped: skipped.filter { destinationID(for: $0.schedule) == destination.id },
+                loggedEnergy: NutritionCalculator.summarize(entries: logged)[.energy].known,
+                scheduledEnergy: summarize(scheduled.flatMap { items(for: $0.schedule) })[.energy].known)
+        }
+    }
+
+    /// The schedule's meal at its saved quantities. Empty when the meal is gone.
+    public func items(for schedule: MealSchedule) -> [DraftItem] {
+        guard let meal = meal(id: schedule.mealTemplateID), !meal.isArchived else { return [] }
+        return DraftItem.items(for: meal, foods: foods)
+    }
+
+    public func nutrition(of schedule: MealSchedule) -> NutritionSummary { summarize(items(for: schedule)) }
+
+    public func mealName(for schedule: MealSchedule) -> String {
+        meal(id: schedule.mealTemplateID)?.name ?? "Removed meal"
+    }
+
+    public func destinationName(for schedule: MealSchedule) -> String {
+        guard let id = schedule.sectionID else { return Destination(section: nil).name }
+        return sections.first { $0.id == id }?.name ?? Destination(section: nil).name
+    }
+
+    public func schedules(for mealID: UUID) -> [MealSchedule] {
+        activeSchedules.filter { $0.mealTemplateID == mealID }
+    }
+
+    /// When the next scheduled meal is due, for waking up to log it while the app is open.
+    public var nextOccurrenceInstant: Date? {
+        let now = clock()
+        return ScheduleEngine.occurrences(
+            of: activeSchedules, from: today, through: today.adding(days: 1, calendar: calendar), calendar: calendar
+        )
+        .first { $0.instant > now }?.instant
+    }
+
+    /// Call when the app becomes active and periodically while it's open: moves to a new day if
+    /// needed, then logs scheduled meals whose time has passed.
+    public func tick(isIdle: Bool = true) async {
+        await refreshForCurrentDate(isIdle: isIdle)
+        await materializeDueOccurrences()
+        lastTick = clock()
+    }
+
+    /// Logs every scheduled meal whose time has passed (within the lookback) and that wasn't
+    /// logged or skipped yet. Each one commits with its occurrence record, so none logs twice.
+    @discardableResult
+    public func materializeDueOccurrences() async -> [LoggedEntry] {
+        let active = activeSchedules
+        guard !active.isEmpty, !isMaterializing else { return [] }
+        isMaterializing = true
+        defer { isMaterializing = false }
+        let now = clock()
+        guard let records = try? await store.occurrenceRecords(
+            from: ScheduleEngine.lookbackStart(now: now, calendar: calendar), through: LogDate(now, calendar: calendar))
+        else { return [] }
+        var logged: [LoggedEntry] = []
+        for occurrence in ScheduleEngine.due(active, handled: Set(records.map(\.key)), now: now, calendar: calendar) {
+            if let entry = try? await commit(occurrence, recordedAt: occurrence.instant) { logged.append(entry) }
+        }
+        guard !logged.isEmpty else { return [] }
+        scheduleRevision += 1
+        if logged.count == 1, let entry = logged.first {
+            toast = Toast(
+                message: "Logged \(entry.name) to \(destinationName(for: entry)) · scheduled",
+                undo: .removeLogged(entry, previousDestinationID: destinationID, previousDraft: nil, draftKey: ""))
+        } else {
+            toast = Toast(message: "Logged \(logged.count) scheduled meals", undo: nil)
+        }
+        return logged
+    }
+
+    /// Logs an upcoming scheduled meal right away. Its upcoming row goes away.
+    public func logOccurrenceNow(_ occurrence: ScheduledOccurrence) async {
+        guard !isLogging else { return }
+        isLogging = true
+        defer { isLogging = false }
+        do {
+            guard let entry = try await commit(occurrence, recordedAt: clock()) else {
+                errorMessage = "Nothing was logged. That saved meal is no longer available."
+                return
+            }
+            scheduleRevision += 1
+            toast = Toast(
+                message: "Logged \(entry.name) to \(destinationName(for: entry))",
+                undo: .removeLogged(entry, previousDestinationID: destinationID, previousDraft: nil, draftKey: ""))
+        } catch {
+            errorMessage = "Nothing was logged. \(error.localizedDescription)"
+        }
+    }
+
+    /// Skips one day of a schedule. The schedule itself carries on.
+    public func skipOccurrence(_ occurrence: ScheduledOccurrence) async {
+        let name = mealName(for: occurrence.schedule)
+        do {
+            try await store.apply([
+                .recordOccurrence(OccurrenceRecord(key: occurrence.key, outcome: .skipped, handledAt: clock()))
+            ])
+            markHandled(occurrence.key, .skipped)
+            scheduleRevision += 1
+            toast = Toast(message: "Skipped \(name)", undo: .unskip(occurrence.key))
+        } catch {
+            errorMessage = "Couldn’t skip \(name). \(error.localizedDescription)"
+        }
+    }
+
+    /// Brings back a skipped day. If its time has already passed, it logs right away.
+    public func unskipOccurrence(_ occurrence: ScheduledOccurrence) async {
+        do {
+            try await unskip(occurrence.key)
+        } catch {
+            errorMessage = "Couldn’t bring back \(mealName(for: occurrence.schedule)). \(error.localizedDescription)"
+        }
+    }
+
+    private func unskip(_ key: OccurrenceKey) async throws {
+        try await store.apply([.deleteOccurrence(key)])
+        if key.date == viewedDate { outcomesOnViewedDate[key] = nil }
+        scheduleRevision += 1
+        await materializeDueOccurrences()
+    }
+
+    /// Undoing a scheduled log: an early log goes back to upcoming; one whose time has passed
+    /// counts as skipped, so it doesn't log again.
+    private func removeScheduledLog(_ entry: LoggedEntry, occurrence key: OccurrenceKey) async throws {
+        var operations: [StoreOperation] = [.deleteEntry(entry.id), .deleteOccurrence(key)]
+        let upcoming = isUpcoming(key)
+        if !upcoming {
+            operations.append(.recordOccurrence(OccurrenceRecord(key: key, outcome: .skipped, handledAt: clock())))
+        }
+        try await store.apply(operations)
+        if key.date == viewedDate { outcomesOnViewedDate[key] = upcoming ? nil : .skipped }
+        scheduleRevision += 1
+    }
+
+    /// Creates or updates a schedule. Missed occurrences log first with the old settings, so an
+    /// edit only changes what's still to come.
+    public func saveSchedule(_ schedule: MealSchedule) async throws {
+        try schedule.validate()
+        guard let meal = meal(id: schedule.mealTemplateID), !meal.isArchived else {
+            throw ScheduleValidationError.mealUnavailable
+        }
+        await materializeDueOccurrences()
+        let now = clock()
+        var saved = schedule
+        saved.createdAt = schedules.first { $0.id == schedule.id }?.createdAt ?? now
+        saved.updatedAt = now
+        saved.activeFrom = now
+        saved.archivedAt = nil
+        try await store.apply([.putSchedule(saved)])
+        replaceSchedules([saved])
+    }
+
+    /// Stops a schedule. Meals it already logged stay logged.
+    public func deleteSchedule(id: UUID) async throws {
+        guard var schedule = schedules.first(where: { $0.id == id }), !schedule.isArchived else { return }
+        await materializeDueOccurrences()
+        schedule.archivedAt = clock()
+        schedule.updatedAt = clock()
+        try await store.apply([.putSchedule(schedule)])
+        replaceSchedules([schedule])
+    }
+
+    /// Notifications for upcoming scheduled meals that ask for one.
+    public func notificationPlan() async -> [PlannedNotification] {
+        let now = clock()
+        let first = LogDate(now, calendar: calendar)
+        let records = (try? await store.occurrenceRecords(from: first, through: first.adding(days: 7, calendar: calendar))) ?? []
+        return ScheduleEngine.notificationPlan(
+            activeSchedules, handled: Set(records.map(\.key)), now: now, calendar: calendar
+        ) { occurrence in
+            let mealItems = items(for: occurrence.schedule)
+            guard !mealItems.isEmpty else { return nil }
+            return (
+                mealName(for: occurrence.schedule), summarize(mealItems)[.energy].known,
+                destinationName(for: occurrence.schedule)
+            )
+        }
+    }
+
+    /// Logs one occurrence together with its record. A meal that's gone is recorded as skipped,
+    /// so it isn't retried, and nil is returned.
+    private func commit(_ occurrence: ScheduledOccurrence, recordedAt: Date) async throws -> LoggedEntry? {
+        let schedule = occurrence.schedule
+        let mealItems = items(for: schedule)
+        guard let meal = meal(id: schedule.mealTemplateID), !mealItems.isEmpty else {
+            try await store.apply([
+                .recordOccurrence(OccurrenceRecord(key: occurrence.key, outcome: .skipped, handledAt: clock()))
+            ])
+            markHandled(occurrence.key, .skipped)
+            return nil
+        }
+        let entryID = UUID()
+        let section = schedule.sectionID.flatMap { id in activeSections.first { $0.id == id } }
+        let record = OccurrenceRecord(key: occurrence.key, outcome: .logged(entryID: entryID), handledAt: clock())
+        // A one-time schedule is done once it logs.
+        var finished: MealSchedule?
+        if case .once = schedule.recurrence {
+            finished = schedule
+            finished?.archivedAt = clock()
+            finished?.updatedAt = clock()
+        }
+        let request = LogRequest(
+            name: meal.name, mealTemplateID: meal.id, items: mealItems, logDate: occurrence.key.date, section: section,
+            path: .normal, additionalOperations: [.recordOccurrence(record)] + (finished.map { [.putSchedule($0)] } ?? []),
+            recordedAt: recordedAt, scheduleOccurrence: occurrence.key, entryID: entryID)
+        let entry = try await logging.log(request)
+        if let finished { replaceSchedules([finished]) }
+        markHandled(occurrence.key, .logged(entryID: entryID))
+        insertLocally(entry)
+        return entry
+    }
+
+    private func markHandled(_ key: OccurrenceKey, _ outcome: OccurrenceOutcome) {
+        if key.date == viewedDate { outcomesOnViewedDate[key] = outcome }
+    }
+
+    /// True while an occurrence's time is still ahead.
+    private func isUpcoming(_ key: OccurrenceKey) -> Bool {
+        guard let schedule = schedules.first(where: { $0.id == key.scheduleID }) else { return false }
+        return ScheduleEngine.instant(of: schedule, on: key.date, calendar: calendar) > clock()
+    }
+
+    private func occurrenceOutcomes(on date: LogDate) async throws -> [OccurrenceKey: OccurrenceOutcome] {
+        let records = try await store.occurrenceRecords(from: date, through: date)
+        return Dictionary(records.map { ($0.key, $0.outcome) }, uniquingKeysWith: { $1 })
+    }
+
+    private func destinationID(for schedule: MealSchedule) -> String {
+        guard let id = schedule.sectionID, activeSections.contains(where: { $0.id == id }) else {
+            return SectionKey.unsectioned
+        }
+        return SectionKey.key(for: id)
+    }
+
+    private func summarize(_ items: [DraftItem]) -> NutritionSummary {
+        (try? NutritionCalculator.summarize(items.map(\.calculatorItem))) ?? NutritionSummary()
+    }
+
+    /// Copies of the active schedules matching `predicate`, archived now.
+    private func archivedSchedules(where predicate: (MealSchedule) -> Bool) -> [MealSchedule] {
+        activeSchedules.filter(predicate).map { schedule in
+            var copy = schedule
+            copy.archivedAt = clock()
+            copy.updatedAt = clock()
+            return copy
+        }
+    }
+
+    private func replaceSchedules(_ changed: [MealSchedule]) {
+        guard !changed.isEmpty else { return }
+        for schedule in changed {
+            if let index = schedules.firstIndex(where: { $0.id == schedule.id }) {
+                schedules[index] = schedule
+            } else {
+                schedules.append(schedule)
+            }
+        }
+        scheduleRevision += 1
     }
 
     // MARK: Export and import
@@ -806,7 +1357,8 @@ public final class DiaryModel {
         return PersonalDataSet(
             foods: configuration.foods, meals: configuration.meals, sections: configuration.sections,
             entries: try await store.allEntries(), targets: configuration.targets,
-            preferences: configuration.preferences)
+            preferences: configuration.preferences, schedules: configuration.schedules,
+            occurrences: try await store.allOccurrenceRecords())
     }
 
     /// Writes a recovery export of current data, then atomically replaces everything with `data`.

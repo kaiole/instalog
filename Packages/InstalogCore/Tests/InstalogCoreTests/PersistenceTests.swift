@@ -98,7 +98,7 @@ struct PersistenceTests {
         let summary = NutritionCalculator.summarize(entries: entries)
         #expect(summary[.vitaminC].completeness == .unknown)
         #expect(summary[.magnesium].known.isClose(to: 40 * 0.3725))
-        #expect(String(data: file, encoding: .utf8)!.contains("\"schemaVersion\" : 1"))
+        #expect(String(data: file, encoding: .utf8)!.contains("\"schemaVersion\" : 2"))
     }
 
     @Test("AT-32: unsupported or invalid imports fail without touching the store")

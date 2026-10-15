@@ -4,6 +4,7 @@ import SwiftUI
 struct MealLibraryView: View {
     let model: DiaryModel
     @State private var removing: MealTemplate?
+    @State private var scheduling: ScheduleEditorTarget?
 
     var body: some View {
         List {
@@ -12,14 +13,19 @@ struct MealLibraryView: View {
                     NavigationLink {
                         MealEditorView(model: model, meal: meal, onDone: nil)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(meal.name).font(Typeface.sans(15, .semibold))
-                            Text(detail(meal)).font(Typeface.sans(12)).foregroundStyle(Palette.tertiary)
+                        HStack(spacing: Spacing.s) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(meal.name).font(Typeface.sans(15, .semibold))
+                                Text(detail(meal)).font(Typeface.sans(12)).foregroundStyle(Palette.tertiary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            ScheduleButton(model: model, meal: meal) { scheduling = $0 }
                         }
-                        .frame(minHeight: 44)
+                        .frame(minHeight: 56)
                     }
                     .listRowBackground(Palette.raised)
-                    .swipeActions {
+                    .swipeActions(allowsFullSwipe: false) {
                         Button("Remove", role: .destructive) { removing = meal }
                     }
                 }
@@ -30,11 +36,12 @@ struct MealLibraryView: View {
                 }
                 .listRowBackground(Palette.raised)
             } footer: {
-                Text("Library order is creation order. Each section can show its own order.")
+                Text("Tap Schedule to have a meal log itself at a set time. Library order is creation order; each section can show its own order.")
             }
         }
         .scrollContentBackground(.hidden)
         .background(Palette.sheet)
+        .scheduleEditorSheet(model, target: $scheduling)
         .navigationTitle("Saved meals")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -53,7 +60,8 @@ struct MealLibraryView: View {
                 }
             }
         } message: {
-            Text("It leaves every section and future choices. Entries you already logged keep their foods and nutrition.")
+            let stops = removing.map { model.schedules(for: $0.id).count } ?? 0
+            Text("It leaves every section and future choices\(stops == 0 ? "" : ", and its \(stops == 1 ? "schedule stops" : "\(stops) schedules stop")"). Entries you already logged keep their foods and nutrition.")
         }
         .foregroundStyle(Palette.text)
     }

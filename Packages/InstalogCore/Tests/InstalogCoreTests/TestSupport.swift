@@ -91,6 +91,10 @@ actor ControllableStore: PersonalStore {
     func datesWithEntries(from first: LogDate, through last: LogDate) async throws -> Set<LogDate> {
         try await inner.datesWithEntries(from: first, through: last)
     }
+    func occurrenceRecords(from first: LogDate, through last: LogDate) async throws -> [OccurrenceRecord] {
+        try await inner.occurrenceRecords(from: first, through: last)
+    }
+    func allOccurrenceRecords() async throws -> [OccurrenceRecord] { try await inner.allOccurrenceRecords() }
 
     func apply(_ operations: [StoreOperation]) async throws {
         applyCount += 1

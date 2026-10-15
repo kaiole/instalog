@@ -1,5 +1,6 @@
 import InstalogCore
 import SwiftUI
+import UIKit
 
 /// User-entered calorie and macro goals, plus optional nutrient targets and FDA references.
 struct TargetsView: View {
@@ -7,12 +8,16 @@ struct TargetsView: View {
     @State private var editing: NutrientDefinition?
     /// Shown immediately while the preference saves, so the toggle doesn't flicker.
     @State private var pendingReferences: Bool?
+    @State private var confirmingReset = false
+    /// The last reset, offered for Undo for a few seconds.
+    @State private var lastReset: TargetReset?
 
     private static let primary: [NutrientID] = [.energy, .protein, .carbohydrate, .fat]
 
     var body: some View {
         // Editing always applies from today, so show today's targets even while browsing a past day.
         let targets = model.effectiveTargets(on: model.today)
+        let balance = model.macroBalance()
         List {
             if !model.isViewingToday {
                 Label("Showing today’s targets. \(Format.dayHeading(model.viewedDate, today: model.today)) keeps the targets it had.", systemImage: "calendar")
@@ -20,14 +25,23 @@ struct TargetsView: View {
                     .foregroundStyle(Palette.secondary)
                     .listRowBackground(Color.clear)
             }
+            if !balance.isConsistent, let energy = balance.energy {
+                mismatchBanner(macroKcal: balance.macroKcal, energy: energy)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+            }
             SwiftUI.Section {
                 ForEach(Self.primary.compactMap(NutrientRegistry.definition(for:))) { definition in
-                    row(definition, target: targets[definition.id])
+                    NavigationLink { MacroTargetsEditor(model: model) } label: {
+                        rowLabel(definition, target: targets[definition.id], showsChevron: false)
+                    }
+                    .listRowBackground(Palette.raised)
+                    .accessibilityLabel(accessibilityText(definition, target: targets[definition.id]))
                 }
             } header: {
                 Caption("Calories & macros")
             } footer: {
-                Text("You set these. The app never calculates or changes them for you.")
+                Text("Macros are checked against calories at 4 / 4 / 9 kcal per gram.")
             }
             SwiftUI.Section {
                 Toggle("Show FDA reference values", isOn: Binding(
@@ -45,8 +59,11 @@ struct TargetsView: View {
                     }))
                     .tint(Palette.accent)
                     .listRowBackground(Palette.raised)
+                resetRow
             } footer: {
-                Text("FDA Daily Values (2016, adults and children 4+) are general label references, not personal requirements. Override or turn off any of them.")
+                Text(model.customMicronutrientTargets.isEmpty
+                    ? "All nutrient targets with a Daily Value already use it. FDA Daily Values (2016, adults and children 4+) are standard nutrition-label references, the same for everyone. They aren’t personalized to you."
+                    : "FDA Daily Values (2016, adults and children 4+) are standard nutrition-label references, the same for everyone. They aren’t personalized to you. Reset only changes nutrient targets that have a Daily Value; calories, macros and your other limits stay.")
             }
             ForEach(NutrientGroup.allCases.filter { $0 != .energyAndMacros }, id: \.self) { group in
                 SwiftUI.Section {
@@ -65,16 +82,135 @@ struct TargetsView: View {
         .sheet(item: $editing) { definition in
             TargetEditorSheet(model: model, definition: definition, close: { editing = nil })
         }
+        .confirmationDialog(resetTitle, isPresented: $confirmingReset, titleVisibility: .visible) {
+            Button("Reset", role: .destructive, action: reset)
+        } message: {
+            Text(resetMessage)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let lastReset {
+                ToastView(
+                    message: "Reset \(Format.count(lastReset.count, "target")) to FDA Daily Values",
+                    undo: { undo(lastReset) }, dismiss: { self.lastReset = nil })
+                    .padding(.horizontal, Spacing.l)
+                    .padding(.bottom, Spacing.s)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .task(id: lastReset.nutrients) {
+                        UIAccessibility.post(notification: .announcement, argument: "Reset to FDA Daily Values")
+                        guard !UIAccessibility.isVoiceOverRunning else { return }
+                        try? await Task.sleep(for: .seconds(6))
+                        withAnimation { self.lastReset = nil }
+                    }
+            }
+        }
         .foregroundStyle(Palette.text)
+    }
+
+    private var resetRow: some View {
+        let count = model.customMicronutrientTargets.count
+        let enabled = model.canResetMicronutrientTargets
+        return Button { confirmingReset = true } label: {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "arrow.counterclockwise")
+                Text("Reset all to FDA Daily Values").font(Typeface.bodyMedium)
+                Spacer(minLength: Spacing.s)
+                Text(count == 0 ? "none custom" : "\(count) custom")
+                    .font(Typeface.numFootnote)
+                    .foregroundStyle(enabled ? Palette.secondary : Palette.disabled)
+            }
+            .foregroundStyle(enabled ? Palette.accent : Palette.disabled)
+            .frame(minHeight: Metrics.formRow)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .listRowBackground(Palette.raised)
+    }
+
+    private var resetTitle: String {
+        let count = model.customMicronutrientTargets.count
+        if count == 0 { return "Show FDA Daily Values again?" }
+        return "Replace \(Format.count(count, "custom target")) with FDA Daily Values?"
+    }
+
+    private var resetMessage: String {
+        let names = model.customMicronutrientTargets.compactMap { NutrientRegistry.definition(for: $0)?.name }
+        var text = names.isEmpty ? "" : names.formatted(.list(type: .and)) + ". "
+        if !model.preferences.showReferenceValues { text += "FDA reference values will show again. " }
+        return text + "Past days keep their targets. Calories and macros aren’t changed."
+    }
+
+    private func reset() {
+        Task {
+            do {
+                let result = try await model.resetMicronutrientTargets()
+                withAnimation { lastReset = result.count > 0 ? result : nil }
+            } catch {
+                model.errorMessage = "Couldn’t reset your targets. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func undo(_ reset: TargetReset) {
+        withAnimation { lastReset = nil }
+        Task {
+            do {
+                try await model.undoTargetReset(reset)
+            } catch {
+                model.errorMessage = "Couldn’t undo the reset. \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Saved targets that contradict each other, e.g. from before targets were checked.
+    private func mismatchBanner(macroKcal: Double, energy: Double) -> some View {
+        HStack(alignment: .top, spacing: Spacing.m) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Palette.over)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                (Text("Targets don’t match. ").font(Typeface.calloutStrong)
+                    + Text("Your macros add up to \(NumberFormatting.energy(macroKcal)) kcal, but calories are set to \(NumberFormatting.energy(energy)).")
+                    .font(Typeface.subhead))
+                    .foregroundStyle(Palette.text)
+                NavigationLink { MacroTargetsEditor(model: model) } label: {
+                    HStack(spacing: 3) {
+                        Text("Review")
+                        Image(systemName: "chevron.right").font(.system(.caption, weight: .semibold))
+                    }
+                    .font(Typeface.calloutStrong)
+                    .foregroundStyle(Palette.over)
+                    .frame(minHeight: Metrics.tapTarget)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, Spacing.l)
+        .padding(.top, Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.overSurface, in: RoundedRectangle(cornerRadius: Radius.l, style: .continuous))
+    }
+
+    private func accessibilityText(_ definition: NutrientDefinition, target: EffectiveTarget?) -> String {
+        "\(definition.name), \(target.map { "\($0.kind == .limit ? "limit" : "target") \(NumberFormatting.nutrient($0.amount, unit: $0.unit))" } ?? "not set")"
     }
 
     private func row(_ definition: NutrientDefinition, target: EffectiveTarget?) -> some View {
         Button { editing = definition } label: {
+            rowLabel(definition, target: target, showsChevron: true)
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Palette.raised)
+        .accessibilityLabel(accessibilityText(definition, target: target))
+    }
+
+    private func rowLabel(_ definition: NutrientDefinition, target: EffectiveTarget?, showsChevron: Bool) -> some View {
             HStack(spacing: Spacing.m) {
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(definition.name).font(Typeface.body)
                     if let target {
-                        Text(target.kind == .limit ? "limit" + (target.isReference ? " · FDA DV" : "") : "target" + (target.isReference ? " · FDA DV" : ""))
+                        Text((target.kind == .limit ? "limit" : "target")
+                            + (target.isReference ? " · FDA DV" : model.customMicronutrientTargets.contains(definition.id) ? " · custom" : ""))
                             .font(Typeface.numFootnote)
                             .foregroundStyle(Palette.tertiary)
                     }
@@ -83,16 +219,14 @@ struct TargetsView: View {
                 Text(target.map { NumberFormatting.nutrient($0.amount, unit: $0.unit) } ?? "Not set")
                     .font(Typeface.numCallout)
                     .foregroundStyle(target == nil ? Palette.tertiary : Palette.secondary)
-                Image(systemName: "chevron.right")
-                    .font(.system(.footnote, weight: .semibold))
-                    .foregroundStyle(Palette.tertiary)
+                if showsChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(.footnote, weight: .semibold))
+                        .foregroundStyle(Palette.tertiary)
+                }
             }
             .frame(minHeight: Metrics.formRow)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(Palette.raised)
-        .accessibilityLabel("\(definition.name), \(target.map { "\($0.kind == .limit ? "limit" : "target") \(NumberFormatting.nutrient($0.amount, unit: $0.unit))" } ?? "not set")")
     }
 }
 

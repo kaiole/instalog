@@ -78,10 +78,13 @@ public struct LoggedEntry: Hashable, Sendable, Codable, Identifiable {
     public var name: String
     public var path: EntryPath
     public var foods: [LoggedFoodSnapshot]
+    /// The scheduled meal occurrence this entry was logged for, if any.
+    public var scheduleOccurrence: OccurrenceKey?
 
     public init(
         id: UUID = UUID(), logDate: LogDate, recordedAt: Date, sectionID: UUID?, sectionName: String?,
-        mealTemplateID: UUID?, name: String, path: EntryPath, foods: [LoggedFoodSnapshot], updatedAt: Date? = nil
+        mealTemplateID: UUID?, name: String, path: EntryPath, foods: [LoggedFoodSnapshot], updatedAt: Date? = nil,
+        scheduleOccurrence: OccurrenceKey? = nil
     ) {
         self.id = id
         self.logDate = logDate
@@ -93,6 +96,7 @@ public struct LoggedEntry: Hashable, Sendable, Codable, Identifiable {
         self.name = name
         self.path = path
         self.foods = foods
+        self.scheduleOccurrence = scheduleOccurrence
     }
 
     public var isOneOff: Bool { mealTemplateID == nil }

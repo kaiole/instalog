@@ -68,5 +68,9 @@ struct CatalogTests {
             #expect(throws: Never.self) { try meal.validate(foods: foods) }
         }
         #expect(routine.meals.first { $0.name == "Overnight oats" }?.items.count == 4)
+        let targets = Dictionary(uniqueKeysWithValues: routine.targets.map { ($0.nutrientID, $0.amount) })
+        let balance = MacroBalance(
+            energy: targets[.energy], protein: targets[.protein], carbohydrate: targets[.carbohydrate], fat: targets[.fat])
+        #expect(balance.status == .matches, "Demo targets add up at 4 / 4 / 9")
     }
 }

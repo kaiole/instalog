@@ -78,3 +78,89 @@ struct TargetTests {
         #expect(!NutritionTarget(nutrientID: .protein, kind: .target, amount: .nan, unit: .gram, effectiveDate: day).isValid)
     }
 }
+
+@MainActor
+@Suite("Resetting micronutrient targets")
+struct TargetResetTests {
+    let clock = TestClock()
+
+    private func model() async throws -> DiaryModel {
+        await Scenario.model(store: try SQLitePersonalStore(url: nil), clock: clock)
+    }
+
+    @Test("Counts only nutrients that differ from their FDA Daily Value")
+    func customCount() async throws {
+        let model = try await model()
+        #expect(model.customMicronutrientTargets.isEmpty)
+        #expect(!model.canResetMicronutrientTargets)
+
+        try await model.setMacroTargets(MacroBalance(energy: 2000, protein: 150, carbohydrate: 237.5, fat: 50))
+        try await model.setTarget(.iron, amount: 8, kind: .target)
+        try await model.disableTarget(.vitaminC)
+        try await model.setTarget(.caffeine, amount: 400, kind: .limit)
+        try await model.setTarget(.zinc, amount: 11, kind: .reference)
+        #expect(model.customMicronutrientTargets == [.iron, .vitaminC].sorted { $0.rawValue < $1.rawValue })
+        #expect(model.canResetMicronutrientTargets)
+    }
+
+    @Test("Reset restores FDA values, re-enables nutrients, and leaves calories, macros and other limits alone")
+    func reset() async throws {
+        let model = try await model()
+        try await model.setMacroTargets(MacroBalance(energy: 2000, protein: 150, carbohydrate: 237.5, fat: 50))
+        try await model.setTarget(.iron, amount: 8, kind: .target)
+        try await model.disableTarget(.vitaminC)
+        try await model.setTarget(.caffeine, amount: 400, kind: .limit)
+        let yesterday = model.today.adding(days: -1)
+        let before = model.effectiveTargets(on: yesterday)
+        clock.advance(seconds: 86_400)
+        await model.tick()
+
+        #expect(try await model.resetMicronutrientTargets().count == 2)
+        let now = model.effectiveTargets(on: model.today)
+        #expect(now[.iron]?.amount == 18)
+        #expect(now[.iron]?.isReference == true)
+        #expect(now[.vitaminC]?.amount == 90)
+        #expect(now[.caffeine]?.amount == 400, "Limits without a Daily Value are the user's own; reset keeps them")
+        #expect(now[.energy]?.amount == 2000)
+        #expect(now[.protein]?.amount == 150)
+        #expect(model.effectiveTargets(on: yesterday) == before, "Earlier days keep their targets")
+        #expect(model.customMicronutrientTargets.isEmpty)
+        #expect(try await model.resetMicronutrientTargets().count == 0)
+    }
+
+    @Test("Reset turns FDA values back on")
+    func showsReferences() async throws {
+        let model = try await model()
+        try await model.setShowReferenceValues(false)
+        #expect(model.canResetMicronutrientTargets)
+        #expect(try await model.resetMicronutrientTargets().count == 0)
+        #expect(model.preferences.showReferenceValues)
+        #expect(!model.canResetMicronutrientTargets)
+    }
+
+    @Test("Undo puts the custom targets back")
+    func undo() async throws {
+        let model = try await model()
+        try await model.setTarget(.iron, amount: 8, kind: .target)
+        try await model.disableTarget(.vitaminC)
+        try await model.setShowReferenceValues(false)
+        let reset = try await model.resetMicronutrientTargets()
+        try await model.undoTargetReset(reset)
+        let now = model.effectiveTargets(on: model.today)
+        #expect(now[.iron]?.amount == 8)
+        #expect(model.userTarget(for: .vitaminC)?.enabled == false)
+        #expect(!model.preferences.showReferenceValues)
+        #expect(model.customMicronutrientTargets == [.iron, .vitaminC].sorted { $0.rawValue < $1.rawValue })
+    }
+
+    @Test("Reset commits in one batch")
+    func oneBatch() async throws {
+        let store = ControllableStore(inner: try SQLitePersonalStore(url: nil))
+        let model = await Scenario.model(store: store, clock: clock)
+        try await model.setTarget(.iron, amount: 8, kind: .target)
+        try await model.setTarget(.zinc, amount: 5, kind: .target)
+        let writes = await store.applyCount
+        try await model.resetMicronutrientTargets()
+        #expect(await store.applyCount == writes + 1)
+    }
+}
