@@ -224,7 +224,8 @@ final class RoutineFlowUITests: XCTestCase {
         snapshot("15b-section-meals")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS 'Saved meals'")).firstMatch.tap()
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Overnight oats'")).firstMatch.tap()
+        // Library rows read "Overnight oats, 4 foods · …"; the bare name is the Today chip behind the sheet.
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Overnight oats, '")).firstMatch.tap()
         let more = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'More '")).firstMatch
         XCTAssertTrue(more.waitForExistence(timeout: 3))
         more.tap()

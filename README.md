@@ -30,6 +30,40 @@ On first launch the library is empty. Tap **Load demo routine** to get eight sav
 real USDA foods, four sections (Breakfast, Lunch, Snack, Dinner; Dinner has no assigned meals, so it
 shows all of them) and sample calorie/macro targets.
 
+## Using the app
+
+**Core task: log the meals you eat every day in one tap.**
+
+1. **Today screen.** The header shows calories and up to three nutrients you choose, against your
+   targets. Below it, the section card (e.g. *Breakfast*) shows what you've already logged there and
+   the selected saved meal.
+2. **Log a saved meal.** Optionally change an amount in the meal card (this affects only this log),
+   then tap the **Log** button at the bottom (it reads **Log again** if you've already logged that meal today). The entry appears in the section card and the totals update.
+3. **Switch sections or meals.** Use the ▲ ▼ buttons, swipe vertically on the section header, or tap
+   the section name to open the **Sections** sheet. That sheet also lists the foods logged in every
+   section, so it doubles as a daily overview.
+4. **Add something else.** **Add food** searches the bundled USDA catalog (or lets you create a custom
+   food), supports several foods in one entry, and can save the result as a new meal.
+5. **Edit or delete an entry.** Tap an entry to change its amounts, move it to another section or
+   save it as a meal. Swipe it to reveal **Delete**; an undo toast appears afterwards.
+6. **Look at other days.** Tap the date heading to pick a day, or use the ‹ › arrows, to review or log into a past day.
+7. **Nutrients.** Tap the summary to see every nutrient, how complete the data is and how it
+   compares with your target.
+
+**Settings** (sliders icon, top right):
+
+- **Order sections and assign meals.** Name and order sections and choose which saved meals each one offers.
+- **Saved meals.** Create and edit the meals you log (the meal library).
+- **Scheduled meals.** Pick a saved meal, a section, a time and the days it repeats (or a single
+  date). It logs itself at that time. Before then it shows on Today as a faded row with a clock and
+  isn't counted. Tap that row to **Skip today**, **Log now** or **Edit schedule**. Logging by hand
+  never cancels a schedule. Missed occurrences are filled in on the day they belong to when the app
+  next opens (up to the last 7 days). An optional notification, off by default, is sent after the meal logs.
+- **Targets.** Calories and macros are yours to set, and the app warns when macros don't add up to
+  the calorie target (4/4/9 kcal per gram). Other nutrients default to FDA Daily Values, with
+  per-nutrient overrides and a **Reset all to FDA Daily Values** action.
+- **Export or import.** Back up or restore everything as a JSON file.
+
 ## Tests
 
 ```sh
@@ -78,6 +112,11 @@ tools/build_catalog.py        builds catalog.sqlite from USDA CSVs
 - **Logging.** Saved-meal logging and Add food go through one `LoggingService`. It builds immutable
   food snapshots and commits the entry and all of its foods in one SQLite transaction. The UI only
   shows success after the write succeeds, and a second tap during an in-flight save is ignored.
+- **Scheduled meals.** A schedule is a saved meal, a section, a time and optional repeat days. The
+  app logs it once per day when the time passes, through the same `LoggingService`, and records the
+  outcome (logged or skipped) so a deleted entry never logs again. Occurrences before the schedule was
+  created or last edited never log, and after a long absence only the last 7 days are filled in.
+  Notifications only report; the logging itself happens in the app.
 - **Auto-advance** is off by default. When on, it moves to the next section only after a successful
   log from the meal card. It stops at the last section and never runs for Add food. Manual browsing
   (▲ ▼ buttons, a vertical swipe on the section header, or the section list) wraps around.
@@ -92,7 +131,8 @@ tools/build_catalog.py        builds catalog.sqlite from USDA CSVs
   and for custom foods servings, milliliters and fluid ounces. Volume is converted to mass only when
   the food documents a density. Nothing is rounded until it's displayed.
 - **Targets.** You enter calorie and macro targets yourself. For other nutrients, the FDA Daily Values
-  (2016) are shown as labelled references, and you can override or turn off each one. A changed target
+  (2016) are shown as labelled references (not personalized), and you can override or turn off each one
+  or reset them all to the FDA values. A changed target
   takes effect from today, so earlier days keep their old one. Niacin DV (niacin equivalents) isn't
   compared with USDA preformed niacin because the forms differ.
 - **Export/import.** Versioned JSON with every record and snapshot. Timestamps are exact numbers
@@ -128,6 +168,8 @@ python3 tools/build_catalog.py FoodData_Central_sr_legacy_food_csv_2018-04
 - The entry editor changes amounts, not units, and an entry's time can't be edited.
 - Custom foods can't be edited after they're saved. To change one, create a new one.
 - The library uses creation order. You can't reorder the whole library globally, only each section.
+- Scheduled meals log when the app is open or next launched, not in the background. Notifications
+  are scheduled ahead of time, so they can appear before the app has recorded the entry.
 - Local only. Uninstalling the app deletes your data unless you exported it or your device backup
   includes it.
 - Dark appearance only, matching the design canvas.
